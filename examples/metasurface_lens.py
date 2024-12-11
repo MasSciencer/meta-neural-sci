@@ -1,6 +1,4 @@
-import matplotlib.pyplot as plt
 import numpy as np
-
 import meep as mp
 
 resolution = 50  # pixels/μm
@@ -170,29 +168,6 @@ mode_phase = np.empty(gdc.size)
 for n in range(gdc.size):
     mode_tran[n], mode_phase[n] = grating(gp, gh, [gdc[n]])
 
-plt.figure(dpi=200)
-plt.subplot(1, 2, 1)
-plt.plot(gdc, mode_tran, "bo-")
-plt.xlim(gdc[0], gdc[-1])
-plt.xticks(list(np.linspace(0.1, 0.9, 5)))
-plt.xlabel("grating duty cycle")
-plt.ylim(0.96, 1.00)
-plt.yticks(list(np.linspace(0.96, 1.00, 5)))
-plt.title("transmittance")
-
-plt.subplot(1, 2, 2)
-plt.plot(gdc, mode_phase, "rs-")
-plt.grid(True)
-plt.xlim(gdc[0], gdc[-1])
-plt.xticks(list(np.linspace(0.1, 0.9, 5)))
-plt.xlabel("grating duty cycle")
-plt.ylim(-2 * np.pi, 0)
-plt.yticks(list(np.linspace(-6, 0, 7)))
-plt.title("phase (radians)")
-
-plt.tight_layout(pad=0.5)
-plt.show()
-
 gdc_new = np.linspace(0.16, 0.65, 500)
 mode_phase_interp = np.interp(gdc_new, gdc, mode_phase)
 print(f"phase-range:, {mode_phase_interp.max() - mode_phase_interp.min():.6f}")
@@ -232,13 +207,3 @@ x = np.linspace(
     focal_length + 0.5 * spot_length,
     ff_res * spot_length,
 )
-plt.figure(dpi=200)
-plt.semilogy(x, abs(ff_nc[:, 0]) ** 2, "bo-", label=f"num_cells = {2*num_cells[0] + 1}")
-plt.semilogy(x, abs(ff_nc[:, 1]) ** 2, "ro-", label=f"num_cells = {2*num_cells[1] + 1}")
-plt.semilogy(x, abs(ff_nc[:, 2]) ** 2, "go-", label=f"num_cells = {2*num_cells[2] + 1}")
-plt.xlabel("x coordinate (μm)")
-plt.ylabel(r"energy density of far-field electric fields, |E$_z$|$^2$")
-plt.title("focusing properties of a binary-grating metasurface lens")
-plt.legend(loc="upper right")
-plt.tight_layout()
-plt.show()
