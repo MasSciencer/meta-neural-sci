@@ -31,7 +31,7 @@ sub_center = mp.Vector3(x=- 0.5 * at_hei, y=0, z=cell_Z/2)
 at_center = mp.Vector3(0.5 * in_sub)
 
 # 2. Настройки для определения источника излучения
-inc_lcen = 3  # center wavelength (Основная длина волны)
+inc_lcen = 1  # center wavelength (Основная длина волны)
 inc_fcen = 1 / inc_lcen  # center frequency (MEEP работает только с частотами, поэтому перевод в частоту)
 inc_df = 0.1 * inc_fcen  # frequency width (Ширина относительно пика)
 #depended
