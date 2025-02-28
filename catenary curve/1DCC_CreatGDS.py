@@ -53,7 +53,7 @@ for m in range(M):
         mask = y2 <= ymax
         xt = xt[mask]
         y1 = y1[mask]
-        y2 = y2[mask]
+        yy2 = y2[mask]
 
         # Generate the boundary coordinates
         xx = np.concatenate([xt, xt[::-1]])

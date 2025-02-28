@@ -3,11 +3,11 @@ import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 
 # Параметры задачи
-wavelength = 3e-6  # длина волны, м
-focal_length = 1000e-6  # фокусное расстояние, м (1 мм)
+wavelength = 3.7e-6  # длина волны, м
+focal_length = 50e-3  # фокусное расстояние, м (50 mm)
 num_points = 1920  # количество точек для расчётов
-aperture_diameter_initial = 200e-6 # 100 microns
-aperture_diameter_final = 3000e-6 # 2 mm
+aperture_diameter_initial = 5e-3 # 5 mm
+aperture_diameter_final = 50e-3 # 50 mm
 nunber_frames = 600
 
 fig, ax = plt.subplots(figsize=(12.5, 10))
