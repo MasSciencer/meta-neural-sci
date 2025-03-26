@@ -93,108 +93,6 @@ real_frequency = 1 / real_wavelength # Hz
 source_center = mp.Vector3(x=-0.5*cell_X+pml) # micron
 flux_center = mp.Vector3(x=-0.5*cell_X+pml+in_gap1+in_sub+at_hei+0.9*in_gap2)
 
-
-class DefSource:
-    def __init__(self, y):
-        self.y = y
-        self._configure_source()
-    def _configure_source(self):
-        self.sources = [mp.Source(
-            mp.GaussianSource(frequency=inc_fcen, fwidth=inc_df),
-            component=mp.Ez,
-            center=source_center,
-            size=mp.Vector3(x=0, y=self.y, z=0),
-            )]
-    def get_sources(self):
-        return self.sources
-    def get_k_vector(self):
-        k_vector_normal = mp.Vector3(0, 0, 0)  # normal incident
-        return k_vector_normal
-
-# 2.1 setting oblique throughout the amplitude function amp_func
-"""
-(1) https://meep.readthedocs.io/en/master/Python_Tutorials/Mode_Decomposition/#reflectance-and-transmittance-spectra-for-planewave-at-oblique-incidence
-(2) https://www.learnelectricalengineering.com/computational_em/lesson3_1.php
-"""
-k_point_normal = mp.Vector3(0, 0, 0) # normal incident
-class KvectorSource:
-    def __init__(self, frequency, y, angle=0):
-        self.y = y
-        self.angle = np.radians(angle)
-        self.frequency = frequency
-        self._configure_source()
-        self.k_vector = mp.Vector3(x=np.cos(self.angle), y=np.sin(self.angle), z = 0).scale(self.frequency)
-
-    def _configure_source(self):
-        self.sources = [mp.Source(mp.ContinuousSource(frequency=self.frequency, end_time= add_time/2, is_integrated=True),
-                             component=mp.Ez,
-                             center=source_center,
-                             size=mp.Vector3(x=0, y=self.y, z=0),
-                             amp_func=self.tilt_function),
-                        mp.Source(mp.ContinuousSource(frequency=self.frequency, end_time= add_time/2, is_integrated=True),
-                            component=mp.Ey,
-                            center=source_center,
-                            size=mp.Vector3(x=0, y=self.y, z=0),
-                            amp_func=lambda vec: 1j * self.tilt_function(vec)  # Добавляем фазовый сдвиг 90 градусов
-                            )]
-
-    def tilt_function(self, vec):
-        return np.exp(1j * 2 * np.pi * (self.k_vector.x * vec.x + self.k_vector.y * vec.y + self.k_vector.z * vec.z))
-    def get_sources(self):
-        return self.sources
-
-    def get_k_vector(self):
-        return self.k_vector
-
-# 2.2  setting oblique throughout eigenmode source oblique
-"""
-(1) https://meep.readthedocs.io/en/master/Python_Tutorials/Eigenmode_Source/#planewaves-in-homogeneous-media
-"""
-class EigenmodeSource:
-    def __init__(self, y, resolution=8, angle=0):
-        self.y = y
-        self.resolution = resolution
-        self.angle = np.radians(angle)
-        self.k_vector = mp.Vector3(at_refractive_indec * inc_fcen, 0, 0).rotate(
-            mp.Vector3(0, 0, 1),
-            self.angle
-        )
-        self._configure_source()
-
-    def _configure_source(self):
-        if self.angle == 0:
-            self.direction = mp.AUTOMATIC
-            self.eig_parity = mp.EVEN_Y + mp.ODD_Z
-            self.symmetries = [mp.Mirror(mp.Y)]
-            self.eig_vol = None
-        else:
-            self.direction = mp.NO_DIRECTION
-            self.eig_parity = mp.ODD_Z
-            self.symmetries = []
-            self.eig_vol = mp.Volume(
-                center=source_center,
-                size=mp.Vector3(0, 1 / self.resolution, 0)
-            )
-
-        self.sources = [
-            mp.EigenModeSource(
-                src=mp.ContinuousSource(inc_fcen),
-                center=source_center,
-                size=mp.Vector3(0, self.y, 0),
-                direction=self.direction,
-                eig_kpoint=self.k_vector,
-                eig_band=1,
-                eig_parity=self.eig_parity,
-                eig_vol=self.eig_vol
-            )
-        ]
-
-    def get_sources(self):
-        return self.sources
-
-    def get_k_vector(self):
-        return self.k_vector
-
 # 3. Optimisation setting
 """
     :parameter chunk_time: time to across 1 chunk by light source
@@ -216,7 +114,7 @@ till_power_target = 1e-3 # power units
 
 
 """ end_functions"""
-end_energy = lambda sim: sim.run(until_after_sources=mp.stop_when_fields_decayed(
+run_end_energy = lambda sim: sim.run(until_after_sources=mp.stop_when_fields_decayed(
     till_edge_time_in_free_space,
     mp.Ez,
     mp.Vector3(x=flux_center.x, y=cell_Y, z=0),
@@ -224,7 +122,7 @@ end_energy = lambda sim: sim.run(until_after_sources=mp.stop_when_fields_decayed
 )
 
 add_time = 2
-end_time = lambda sim, angle: sim.run(until=math.ceil(add_time + real_time_move / chunk_time / math.cos(np.radians(angle))))
+run_end_time = lambda sim, angle: sim.run(until=math.ceil(add_time + real_time_move / chunk_time / math.cos(np.radians(angle))))
 
 
 # 4. PSF
