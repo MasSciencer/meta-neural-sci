@@ -34,12 +34,12 @@ class KvectorSource:
         self.k_vector = mp.Vector3(x=np.cos(self.angle), y=np.sin(self.angle), z = 0).scale(self.frequency)
 
     def _configure_source(self):
-        self.sources = [mp.Source(mp.ContinuousSource(frequency=self.frequency, end_time= conf.add_time/2, is_integrated=True),
+        self.sources = [mp.Source(mp.GaussianSource(frequency=self.frequency, is_integrated=True),
                              component=mp.Ez,
                              center=conf.source_center,
                              size=mp.Vector3(x=0, y=self.y, z=0),
                              amp_func=self.tilt_function),
-                        mp.Source(mp.ContinuousSource(frequency=self.frequency, end_time= conf.add_time/2, is_integrated=True),
+                        mp.Source(mp.GaussianSource(frequency=self.frequency, is_integrated=True),
                             component=mp.Ey,
                             center=conf.source_center,
                             size=mp.Vector3(x=0, y=self.y, z=0),

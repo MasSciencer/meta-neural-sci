@@ -7,12 +7,43 @@ Notice:
 import meep as mp
 import math
 import numpy as np
-from meep.materials import Al2O3_aniso
+from lib import help_functions
+
+
+# GENERAL SETTINGS
+f = 2 * 1e3 # focal length 4 mm
+aperture = 0.6 * 1e3 # actual size in micrometers of lens
+coef_resolution = 4
+inc_wavelength = 4.25 # micron
+is_split = False # is needed to be split the 1st order
+is_calc_order = True # replace manual pure_orders by calculated value
+
+if is_split: split = 5
+else: split = 1
+
+if is_calc_order: pure_orders = help_functions.calculate_order(aperture, inc_wavelength, f)
+else: pure_orders = 5 # initial orders. if is_split = True be recalculated
+
+orders = pure_orders + (split-1) if is_split else pure_orders # the number of radial layers.
+print(f"pure_orders={pure_orders}")
+print(f"orders={orders}")
+
+stack = 0 # Определяет количество саб-ячеек. При 0 имеет только одну главную ячейку
+Q = 200 # curve detailing. It has almost no effect on the result
+w = 0.2 # 200 nm. The width of the gap between the curves
+order_gap = 1.0 # Определяет минимальное расстояние между порядками. Может быть заполнен другой фигурой
+
+maximum_run_time = 400
+add_time = 2
+visualize_curve = True
+visualize_meep = True
 
 # CONSTANTS
 characteristic_length = 1e-6 # 1 micron. Define the size of every single chunk (delta_x)
 c = 3e8 # velocity of light
 S = 0.707 # Courant factor for 2D
+LIMIT_PRODUCT = 0.2 # 200 nm
+spot_ff = aperture
 
 
 # 1. Settings for defining meta-atom parameters. Describe the shape of your meta-atom.
@@ -44,24 +75,21 @@ in_sub = 1.0  # micron
 in_gap1 = 2 # micron
 in_gap2 = 4 # micron
 in_epsilon = 6.5
-in_refractive_indec = math.sqrt(in_epsilon)
 in_material = mp.Medium(epsilon=in_epsilon) # n≈sqrl(epsilon)
 # in_material = Al2O3_aniso
 
 # tune meta-atom layer
-unit_cell = 5  # micron
-at_hei = 1.5  # micron
+at_hei = 1  # micron
 at_epsilon = 6.5
-at_refractive_indec = math.sqrt(at_epsilon)
 at_material = mp.Medium(epsilon=at_epsilon) # https://refractiveindex.info/?shelf=main&book=Si&page=Li-293K
-# at_material = Al2O3_aniso
 
 # tune cell
-pml = 3.0  # micron
+pml = 4.0  # micron
 cell_X = pml + in_gap1 + in_sub + at_hei + in_gap2 + pml # The X size of cell simulation.
-cell_Y = unit_cell # The Y size of cell simulation.
+cell_Y = aperture # The Y size of cell simulation.
 sub_center = mp.Vector3(x=-0.5*cell_X+pml+in_gap1+0.5*in_sub)
 at_center = mp.Vector3(x=-0.5*cell_X+pml+in_gap1+in_sub+at_hei*0.5)
+cell = mp.Vector3(cell_X, cell_Y, 0)  # размер области симуляции
 
 # 2. Settings for determining the radiation source
 
@@ -78,15 +106,21 @@ at_center = mp.Vector3(x=-0.5*cell_X+pml+in_gap1+in_sub+at_hei*0.5)
     :parameter min_frequency: This means we need to make sure that kx is always smaller than vector |k| https://www.learnelectricalengineering.com/computational_em/lesson2_8.php
     no matter what angle we choose kx, will always be smaller than vector |k| for all frequencies in our simulation - we're safe. 
 """
+angle = 0 # in degrees
+inc_nfreq = 1 # frequency discreteness
 
 inc_wavelength = 4.25 # micron
-inc_dwavelength = 1.1 # micron
-inc_start_wavelength = inc_wavelength + inc_dwavelength/2
-inc_end_wavelength = inc_wavelength - inc_dwavelength/2
+inc_dwavelength = 0.2 # micron
+inc_start_wavelength = inc_wavelength - inc_dwavelength/2
+inc_end_wavelength = inc_wavelength + inc_dwavelength/2
+inc_wavelength_array = np.linspace(inc_start_wavelength, inc_end_wavelength, inc_nfreq)
 
 inc_fcen = 1/inc_wavelength  # Hz center frequency
-inc_df = 1/inc_start_wavelength - 1/inc_end_wavelength  # frequency width
-inc_nfreq = 3 # frequency discreteness
+inc_df = abs(1/inc_start_wavelength - 1/inc_end_wavelength)  # frequency width
+inc_start_frequency = inc_fcen - inc_df/2
+inc_end_frequency = inc_fcen + inc_df/2
+inc_frequents_array = np.linspace(inc_start_frequency, inc_end_frequency, inc_nfreq)
+
 min_frequency = inc_fcen - inc_df/2
 real_wavelength = inc_wavelength * characteristic_length # 4.25e-6 m
 real_frequency = 1 / real_wavelength # Hz
@@ -120,10 +154,10 @@ run_end_energy = lambda sim: sim.run(until_after_sources=mp.stop_when_fields_dec
     mp.Vector3(x=flux_center.x, y=cell_Y, z=0),
     till_power_target)
 )
+run_end_time = lambda sim, add_time=2: sim.run(until=math.ceil(add_time + real_time_move / chunk_time / math.cos(np.radians(angle))))
 
-add_time = 2
-run_end_time = lambda sim, angle: sim.run(until=math.ceil(add_time + real_time_move / chunk_time / math.cos(np.radians(angle))))
-
+# how to use:
+# conf.run_end_time(sim)
 
 # 4. PSF
 
@@ -131,15 +165,6 @@ run_end_time = lambda sim, angle: sim.run(until=math.ceil(add_time + real_time_m
     :parameter resolution: number of pixels per image. Higher quality of image than bigger resolution
     
 """
-def calibration_scale (angle):
-    return 1/np.cos(np.radians(angle))
+resolution_base = 500 # Higher quality of image than bigger resolution. Number of pixels per image
 
-resolution_base = 300 # Higher quality of image than bigger resolution. Number of pixels per image
 
-# 5. Check outputs
-print(f"substrait begin in {sub_center.x-0.5*in_sub} and end {sub_center.x + 0.5*in_sub}")
-print(f"atom begin in {at_center.x-0.5*at_hei} and end {at_center.x + 0.5*at_hei}")
-print(f"flux_center begin in {flux_center.x}")
-print(f"at_center is {at_center.x}")
-print(f"sub_center is {sub_center.x}")
-print(f"resolution is {min_resolution}")
