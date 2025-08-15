@@ -2,23 +2,21 @@ import meep as mp
 import numpy as np
 import conf
 import matplotlib.pyplot as plt
+from lib import my_sources
 from matplotlib import animation
 
 # Simulation parameters for MEEP
-increase_resolution = 10 # by default, that should be 1. This parameter multiply min_resolution
-cell = mp.Vector3(0.02*1e3, 0.025*1e3, 0)  # размер области симуляции
-pml_layers = [mp.PML(thickness=conf.pml, direction=mp.X, side=mp.ALL)]
-sources_obj = conf.KvectorSource(y=cell.y, angle=45)
+increase_resolution = 5 # by default, that should be 1. This parameter multiply min_resolution
+cell = mp.Vector3(0.05*1e3, 0.05*1e3, 0)  # размер области симуляции
+pml_layers = [mp.PML(thickness=conf.pml, direction=mp.ALL, side=mp.ALL)]
+sources_obj = my_sources.KvectorSource(diaphragm=0.025*1e3, frequency= conf.inc_fcen, dfreq= conf.inc_df, center = mp.Vector3(0,0,0), angle_in_rad=np.deg2rad(80))
 sources = sources_obj.get_sources()
-k_point = sources_obj.get_k_vector()
 
 sim = mp.Simulation(
     cell_size=cell,
     boundary_layers=pml_layers,
-    sources=sources,
-    k_point=k_point,
+    sources=[sources],
     resolution=conf.min_resolution * increase_resolution,
-    symmetries=[mp.Mirror(mp.Y)]
 
 )
 
@@ -36,22 +34,30 @@ def animate(i):
     return im,
 
 geometry = []
-geometry.append(mp.Block(
+
+geometry1 = mp.Block(
     material=conf.in_material,
-    size=mp.Vector3(conf.in_sub, mp.inf, 0),
-    center=mp.Vector3(conf.sub_center.x),
-))
+    size=mp.Vector3(x = 0.0025*1e3,y = 0.025/2 * 1e3, z = 0),
+    center=mp.Vector3(x = 0.0025*1e3, y = 0.025+0.025*3/4*1e3, z = 0),
+)
+
+geometry2 = mp.Block(
+    material=conf.in_material,
+    size=mp.Vector3(x = 0.0025*1e3,y = 0.025/2 * 1e3, z = 0),
+    center=mp.Vector3(x = 0.0025*1e3, y = -0.025-0.025*3/4*1e3, z = 0),
+)
+
+geometry.append(geometry1)
+geometry.append(geometry2)
+
 
 
 sim = mp.Simulation(
     cell_size=cell,
     boundary_layers=pml_layers,
     geometry=geometry,
-    sources=sources,
-    k_point=k_point,
+    sources=[sources],
     resolution=conf.min_resolution * increase_resolution,
-    symmetries=[mp.Mirror(mp.Y)]
-
 )
 
 plt.figure(figsize=(5, 10))
@@ -61,14 +67,21 @@ sim.plot2D(
 plt.show()  # Отображение изображения
 
 animationTimestepDuration = 0.1
-endTime = 20
+endTime = 30
 
 # Running the simulation
 sim.run(mp.at_every(animationTimestepDuration, updateField), until=endTime)
 fieldData = np.real(fieldData)
 
-fig, ax = plt.subplots()
-im = ax.imshow(fieldData[0], cmap='RdBu', vmin=-1, vmax=1, extent=[-cell.x/2, +cell.x/2, -cell.y/2, cell.y/2], origin='lower')
+# Автоматическая амплитуда по всем кадрам
+abs_max = np.abs(fieldData).max()/2
+print("Максимальная амплитуда поля:", abs_max)
+
+fig, ax = plt.subplots(figsize=(10, 5), dpi=150)
+im = ax.imshow(fieldData[0], cmap='RdBu',
+               vmin=-abs_max, vmax=abs_max,
+               extent=[-cell.x/2, +cell.x/2, -cell.y/2, +cell.y/2],
+               origin='lower')
 fig.colorbar(im)
 numberAnimationTimesteps = fieldData.shape[0]
 fieldAnimation = animation.FuncAnimation(fig, animate, frames=numberAnimationTimesteps, interval=20, blit=True)

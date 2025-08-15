@@ -13,12 +13,12 @@ pml_layers = [mp.PML(thickness=pml_um, direction=mp.X)]
 
 # Incident angle of planewave. 0 is +x with rotation in
 # counter clockwise (CCW) direction around z axis.
-incident_angle = np.radians(40.0)
+incident_angle = np.radians(15.0)
 
 wavelength_um = 1.0
 frequency = 1 / wavelength_um
 
-n_mat = 1.5  # refractive index of homogeneous material
+n_mat = 1.0  # refractive index of homogeneous material
 default_material = mp.Medium(index=n_mat)
 
 k_point = mp.Vector3(n_mat * frequency, 0, 0).rotate(

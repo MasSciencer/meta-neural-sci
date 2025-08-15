@@ -3,12 +3,13 @@ import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 
 # Параметры задачи
-wavelength = 3.7e-6  # длина волны, м
-focal_length = 50e-3  # фокусное расстояние, м (50 mm)
+wavelength = 4.25e-6  # длина волны, м
+focal_length = 5e-3  # фокусное расстояние, м (5 mm)
 num_points = 1920  # количество точек для расчётов
-aperture_diameter_initial = 5e-3 # 5 mm
-aperture_diameter_final = 50e-3 # 50 mm
-nunber_frames = 600
+aperture_diameter_initial = 0.2e-3 # 0.2 mm
+aperture_diameter_final = 5e-3 # 50 mm
+number_frames = 80
+global_state = 0
 
 fig, ax = plt.subplots(figsize=(12.5, 10))
 
@@ -24,15 +25,16 @@ initial_phase_shift = np.mod(initial_phase_shift, 2 * np.pi)
 
 # Отображение начального состояния
 cax = ax.pcolormesh(x * 1e6, y * 1e6, initial_phase_shift, shading='auto', cmap='jet')
-colorbar = plt.colorbar(cax, label='Фазовый сдвиг (0 - 2π)')
+colorbar = plt.colorbar(cax, label='Phase shift (0 - π)')
 
-plt.title('Фазовый сдвиг для фокусировки света')
-plt.xlabel('x (мкм)')
-plt.ylabel('y (мкм)')
+plt.title('The distribution of phase shifts for different lens diameters at a fixed focal length')
+plt.xlabel('x (μm)')
+plt.ylabel('y (μm)')
 plt.axis('equal')
 
 def update(frame):
     global cax  # Доступ к глобальному объекту cax
+    global global_state
     aperture_diameter = frame  # изменяем диаметр апертуры с каждым кадром
     x = np.linspace(-aperture_diameter / 2, aperture_diameter / 2, num_points)
     y = np.linspace(-aperture_diameter / 2, aperture_diameter / 2, num_points)
@@ -51,10 +53,12 @@ def update(frame):
     # Обновляем границы осей
     ax.set_xlim([x.min() * 1e6, x.max() * 1e6])
     ax.set_ylim([y.min() * 1e6, y.max() * 1e6])
-    ax.set_title(f'Фазовый сдвиг для фокусировки света (диаметр апертуры = {frame * 1e6:.1f} мкм)')
+    ax.set_title(f'Phase distribution for an aperture  = {frame * 1e6:.1f} μm)')
+    global_state += 1
+    print(f'global state = {global_state}')
 
 # Анимация
-ani = FuncAnimation(fig, update, frames=np.linspace(aperture_diameter_initial, aperture_diameter_final, nunber_frames), repeat=True, interval = 40)
+ani = FuncAnimation(fig, update, frames=np.linspace(aperture_diameter_initial, aperture_diameter_final, number_frames), repeat=True, interval = 120)
 ani.save('animation.mp4')
 
 plt.show()
