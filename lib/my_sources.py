@@ -49,86 +49,120 @@ class DefSource:
 """
 k_point_normal = mp.Vector3(0, 0, 0) # normal incident
 
-class MultiKvectorSource:
-    def __init__(self, frequency, dfreq, diaphragm, angles_deg):
+# class PlaneWaveSource:
+#     def __init__(self, frequency, diaphragm, center: mp.Vector3):
+#         """
+#         :param frequency: центральная частота
+#         :param diaphragm: высота области источника (вдоль y)
+#         :param center: центр области источника
+#         """
+#         self.frequency = frequency
+#         self.diaphragm = diaphragm
+#         self.center = center
+#         self._configure_source()
+#
+#     def _configure_source(self):
+#         self.sources = mp.Source(
+#             src=mp.ContinuousSource(frequency=self.frequency, is_integrated=False),
+#             component=mp.Ez,
+#             center=self.center,
+#             size=mp.Vector3(x=0, y=self.diaphragm, z=0),
+#         )
+#
+#     def get_sources(self):
+#         return self.sources
+#
+# class FocusedPlaneWaveSource:
+#     def __init__(self, frequency, diaphragm, center: mp.Vector3, focus_point: mp.Vector3):
+#         """
+#         :param frequency: центральная частота
+#         :param dfreq: ширина спектра
+#         :param y_size: высота области источника (вдоль y)
+#         :param focus_point: точка фокусировки в 2D (x, y)
+#         """
+#         self.frequency = frequency
+#         self.diaphragm = diaphragm
+#         self.center = center
+#         self.focus_point = focus_point
+#         self.k0 = 2 * np.pi * frequency
+#         self._configure_source()
+#
+#     def focus_phase(self, vec: mp.Vector3):
+#         """
+#         Фазовая модуляция вдоль y для фокусировки в заданную точку.
+#         Плоская волна с изогнутым фазовым фронтом.
+#         """
+#         dx = self.focus_point.x - vec.x
+#         dy = self.focus_point.y - vec.y
+#         r = np.sqrt(dx**2 + dy**2)
+#         return np.exp(-1j * self.k0 * r)
+#
+#     def _configure_source(self):
+#         self.sources = mp.Source(
+#             src=mp.ContinuousSource(frequency=self.frequency, is_integrated=False),
+#             component=mp.Ez,
+#             center=self.center,
+#             size=mp.Vector3(x=0, y=self.diaphragm, z=0),
+#             amp_func=self.focus_phase,
+#         )
+#     def get_sources(self):
+#         return self.sources
+
+class FocusedEigenmodeSource:
+    def __init__(self, diaphragm, frequency, center, focus_point, verbose=False):
         """
-        frequency: центральная частота (однотональный источник)
-        y: размер линии источника вдоль оси Y
-        angles_deg: список углов падения в градусах, например [20, 30, 40]
+        Источник с использованием EigenModeSource, формирующий фронт,
+        фокусирующийся в точку на расстоянии f по оси z.
+
+        :param diaphragm: диаметр апертуры (вдоль y)
+        :param frequency: частота
+        :param center: положение источника (mp.Vector3)
+        :param focus_point: mp.Vector3
+        :param verbose: вывод параметров
         """
-        self.frequency = frequency
         self.diaphragm = diaphragm
-        self.angles = [np.radians(ang) for ang in angles_deg]
-        self.dfreq = dfreq
-        self._configure_sources()
-
-    def _configure_sources(self):
-        self.sources = []
-        self.k_vectors = []
-
-        for theta in self.angles:
-            # формируем k-вектор для заданного угла
-            kvec = mp.Vector3(np.cos(theta), np.sin(theta), 0).scale(self.frequency)
-            self.k_vectors.append(kvec)
-
-            # амплитудная функция с фазовым фронтом
-            def amp_func(vec, k=kvec):
-                phase = 2 * np.pi * (k.x * vec.x + k.y * vec.y + k.z * vec.z)
-                return np.exp(1j * phase)
-
-            src = mp.Source(
-                src=mp.GaussianSource(frequency=self.frequency, fwidth=self.dfreq),
-                component=mp.Ez,
-                center=mp.Vector3(x = conf.source_center.x, z=0),
-                size=mp.Vector3(x=0, y = self.diaphragm, z=0),
-                amp_func=amp_func
-            )
-            self.sources.append(src)
-
-    def get_sources(self):
-        """Возвращает список объектов mp.Source."""
-        return self.sources
-
-    def get_k_vectors(self):
-        """Возвращает список mp.Vector3 (k-векторов) для каждого угла."""
-        return self.k_vectors
-
-class FocusedPlaneWaveSource:
-    def __init__(self, frequency, diaphragm, center: mp.Vector3, focus_point: mp.Vector3):
-        """
-        :param frequency: центральная частота
-        :param dfreq: ширина спектра
-        :param y_size: высота области источника (вдоль y)
-        :param focus_point: точка фокусировки в 2D (x, y)
-        """
         self.frequency = frequency
-        self.diaphragm = diaphragm
         self.center = center
-        self.focus_point = focus_point
-        self.k0 = 2 * np.pi * frequency
-        self._configure_source()
+        self.focus_distance = focus_point.x
+        self.verbose = verbose
 
-    def focus_phase(self, vec: mp.Vector3):
-        """
-        Фазовая модуляция вдоль y для фокусировки в заданную точку.
-        Плоская волна с изогнутым фазовым фронтом.
-        """
-        dx = self.focus_point.x - vec.x
-        dy = self.focus_point.y - vec.y
-        r = np.sqrt(dx**2 + dy**2)
-        return np.exp(-1j * self.k0 * r)
+        # волновое число в среде
+        self.k0 = 2 * np.pi * frequency
+
+        self._configure_source()
+        if self.verbose:
+            print(self.describe())
 
     def _configure_source(self):
-        self.sources = mp.Source(
-            src=mp.ContinuousSource(frequency=self.frequency),
-            component=mp.Ez,
+        def lens_phase(r):
+            """
+            Фазовый профиль идеальной линзы (без амплитудного затухания).
+            Фокус в точке (x=f, y=0).
+            """
+            dx = self.focus_distance - r.x
+            dy = r.y
+            R = np.sqrt(dx ** 2 + dy ** 2)  # путь до фокуса
+            return np.exp(-1j * self.k0 * R)
+
+        self.sources = mp.EigenModeSource(
+            src=mp.ContinuousSource(self.frequency),
             center=self.center,
-            size=mp.Vector3(x=0, y=self.diaphragm, z=0),
-            amp_func=self.focus_phase
+            size=mp.Vector3(0, self.diaphragm, 0),
+            direction=mp.AUTOMATIC,   # волна идёт вдоль +z
+            eig_band=1,
+            eig_parity=mp.EVEN_Y + mp.ODD_Z,
+            eig_vol=None,
+            amp_func=lens_phase
         )
 
     def get_sources(self):
         return self.sources
+
+    def describe(self):
+        return (f"FocusedEigenmodeSource(f={self.frequency}, "
+                f"focus_distance={self.focus_distance}, "
+                f"center={self.center}, "
+                f"aperture={self.diaphragm})")
 
 class BatchKvectorSource:
     """
