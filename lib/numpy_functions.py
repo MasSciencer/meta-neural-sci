@@ -5,9 +5,7 @@ import os
 from scipy.interpolate import interp1d
 from scipy.fft import fft
 from scipy.signal import savgol_filter
-from typing import Union, Sequence,List, Optional, Iterable
-from dataclasses import dataclass
-from enum import Enum
+from typing import Union, Sequence,List, Iterable, Tuple
 import gdspy
 import conf
 from lib import my_sources
@@ -15,69 +13,26 @@ import trimesh
 from shapely.geometry import Polygon
 from shapely.ops import orient
 
-class ResolutionMode(str, Enum):
-    LOW = "low"
-    MID = "mid"
-    HIGH = "high"
-
-@dataclass(frozen=True)
-class Resolution:
-    """
-    w: wide
-    h: high
-    """
-    w: int
-    h: int
-
 class AdaptiveResolution:
     def __init__(
         self,
         drt: Iterable[float],
-        src: ResolutionMode = ResolutionMode.MID,
-        x_dim: Optional[int] = None,
-        h_dim: int = 1
+        x_dim: int,
+        h_dim: int,
     ):
         """
-        Definition: Если передается значение x_dim, то разрешение постоянное по всем ячейкам.
         :param drt: ширины сегментов по x
-        :param src: (опционально) режим разрешения по x
-        :param x_dim: (фиксированное) разрешение по x
+        :param x_dim: фиксированное разрешение по x
         :param h_dim: разрешение по y
         """
         self.drt = list(drt)
-        self.src = src
         self.x_dim = x_dim
         self.height_dim = h_dim
 
-    def _base(self) -> int:
-        mapping = {
-            ResolutionMode.LOW: 200,
-            ResolutionMode.MID: 500,
-            ResolutionMode.HIGH: 1000,
-        }
-        try:
-            return mapping[self.src]
-        except KeyError:
-            raise ValueError(f"src must be one of {list(mapping)}")
+    def generate(self) -> List[Tuple[int, int]]:
+        """Возвращает список разрешений в формате [(w, h), ...]"""
+        return [(self.x_dim, self.height_dim) for _ in self.drt]
 
-    def generate(self) -> List[Resolution]:
-        # override по x_dim
-        if self.x_dim is not None:
-            return [Resolution(self.x_dim, self.height_dim) for _ in self.drt]
-
-        base = self._base()
-        first = self.drt[0]
-        k = first / base
-
-        # первый сегмент — просто (base, height_dim)
-        result = [Resolution(base, self.height_dim)]
-        # остальные — масштаб
-        for w in self.drt[1:]:
-            res_x = int(w // k)
-            result.append(Resolution(res_x, self.height_dim))
-        return result
-
-    # для удобства: сделать объект итерируемым и индексируемым
     def __iter__(self):
         yield from self.generate()
 
@@ -207,272 +162,9 @@ def get_drt_midrt(rt, orders, is_global = True):
 
     return drt, midrt
 
-def create_2d_curve(a_params, orders, stack, rt, Q=200, w=0.1, plot=False):
-    """
-    :param orders: количество порядков в линзе
-    :param stack: количество кривых, которые пересекаются сечением на каждом порядке. Четное число
-    :param rt: лист с радиусами
-    :param a_params: вектор или лист с коэффициентами формы
-    :param Q: количество точек на кривую. Default 200 points
-    :param w: The width of the gap between the curves. Default 100 nm
-    :return: coordinates of X crossections points (as 2D numpy array) and centers
-    """
-    list_pure_x = []
-    y0 = -0.0001 + 2 * stack * w
-
-    if plot:
-        setup_visualization()
-        ax.axhline(y=y0, color='black', linestyle='--', linewidth=1)
-
-    for m in range(orders):
-        if m == 0:
-            rt0, x0 = 0, 0
-        else:
-            rt0 = rt[m - 1] + 0.01
-            x0 = (rt[m] + rt0) / 2  # центры кривых
-
-        a = a_params[m]
-        x = np.linspace(rt0, rt[m] - 0.01, Q)
-        y = catenary_function(x, x0, a)  # Предполагается, что `a` определено
-
-        # Идём в обратном порядке по стеку (stack, stack-1, ..., 0)
-        for n in range(stack, -1, -1):
-            ip = np.argmin(y)
-            y_shifted = y - y[ip]
-            ymax = 0.5 * (np.max(x) - np.min(x))
-
-            y_top = np.clip(y_shifted, -ymax, ymax)
-            y_above_zero = np.clip(y_shifted - w, -ymax, ymax)
-
-            xx = np.concatenate([x, x[::-1]])
-            yy = np.concatenate([y_top, y_above_zero[::-1]]) + 2 * n * w
-
-            x_pure = cut_y(xx, yy, y0)  # Предполагается, что `cut_y` определена
-            list_pure_x.append(x_pure)
-
-            if plot:
-                # Визуализация
-                plot_curve(xx, yy, x_pure, y0, n)
-
-    # Преобразование в 2D numpy массив с размерностью (orders, stack + 1)
-    x_pure = np.array(list_pure_x, dtype=object).reshape(orders, stack + 1)
-
-    return x_pure
-
-def calculate_width_and_centers(x_pure):
-    """
-    Вычисляет разницы в зависимости от количества элементов во вложенных массивах.
-
-    Параметры:
-    x_pure -- 2D numpy массив, где каждый элемент — массив с 1, 2 или 4 числами
-
-    Возвращает:
-    numpy массив с результатами (форма сохраняется, содержимое заменяется на разницы)
-    """
-    # Создаем выходной массив той же формы, но с dtype=object для гибкости
-    result_width = np.empty_like(x_pure, dtype=object)
-    result_centers = np.empty_like(x_pure, dtype=object)
-
-    for i in range(x_pure.shape[0]):
-        for j in range(x_pure.shape[1]):
-
-            arr = x_pure[i][j]
-
-            if len(arr) == 1 and i == 0 and j == 0:
-                result_width[i][j] = np.array([2 * arr[
-                    0]])  # Пояснение, далее мы используем ширины которые центрированы. А 0 порядок это по сути урезанная ширина, так как другая сторона не учитывается. И чтобы ячейка не оказалась уменьшенной в 2 раза. Ее надо искусственно расширить.
-                result_centers[i][j] = np.array([0])
-
-            elif len(arr) == 2:
-                width1 = arr[1] - arr[0]
-                result_width[i][j] = np.array([width1])
-                center1 = arr[0] + width1 / 2
-                result_centers[i][j] = np.array([center1])
-
-            elif len(arr) == 4:
-                width1 = arr[1] - arr[0]
-                width2 = arr[3] - arr[2]
-                result_width[i][j] = np.array([width1, width2])
-                center1 = arr[0] + width1 / 2
-                center2 = arr[2] + width2 / 2
-                result_centers[i][j] = np.array([center1, center2])
-
-            else:
-                result_width[i][j] = np.array([0])
-                result_centers[i][j] = np.array([0])
-
-    return result_centers, result_width
-
-
-def get_width_and_center(shape_params, plot=True):
-    """
-    Description: возвращает numpy координаты центров и ширин для передачи в геометрию MEEP
-    """
-    rt = calculate_radii(conf.aperture, conf.f, conf.inc_wavelength, conf.pure_orders, conf.split)
-    x_pure = create_2d_curve(shape_params, conf.orders, conf.stack, rt, conf.Q, conf.w, plot=plot)
-    centers, width = calculate_width_and_centers(x_pure)
-    # if plot:
-    #     # Сбор данных для графиков
-    #     stack_indices = list(range(width.shape[1]))
-    #     orders_indices = list(range(width.shape[0]))
-    #     width_values = [width[0][j][0] for j in stack_indices]
-    #     center_values = [centers[j][0][0] for j in orders_indices]
-    #
-    #     # Создаем фигуру с двумя subplots
-    #     plt.figure(figsize=(12, 6))
-    #
-    #     # График для ширины (левый subplot)
-    #     plt.subplot(1, 2, 1)
-    #     plt.plot(stack_indices, width_values, 'bo-', label=f'Width for {width.shape[1] - 1} stacks')
-    #     plt.gca().xaxis.set_major_locator(plt.MaxNLocator(integer=True))
-    #     plt.xlabel('Stack Index')
-    #     plt.ylabel('Width Value')
-    #     plt.title('Width vs Stack Index')
-    #     plt.legend()
-    #     plt.grid()
-    #
-    #     # График для центров (правый subplot)
-    #     plt.subplot(1, 2, 2)
-    #     plt.plot(orders_indices, center_values, 'ro-', label=f'Centers for {width.shape[0]} orders')
-    #     plt.gca().xaxis.set_major_locator(plt.MaxNLocator(integer=True))
-    #     plt.xlabel('Order Index')
-    #     plt.ylabel('Center Value')
-    #     plt.title('Center vs Order Index')
-    #     plt.legend()
-    #     plt.grid()
-    #
-    #     # Оптимизация расположения
-    #     plt.tight_layout()
-    #     plt.show()
-
-    return centers, width
-
-def get_segments(x_pure, rt):
-    result_segments = np.empty_like(x_pure, dtype=object)
-
-    for i in range(x_pure.shape[0]):
-        mid_rt = (rt[i] + rt[i - 1]) / 2
-        for j in range(x_pure.shape[1]):
-
-            arr = x_pure[i][j]
-
-            if len(arr) == 1 and i == 0 and j == 0:
-                result_segments[i][j] = np.array([-arr[0], arr[0]])
-
-            if len(arr) == 2 and i == 0:
-                result_segments[i][j] = np.array([-arr[1], -arr[0], arr[0], arr[1]])
-
-            elif len(arr) == 2:
-                result_segments[i][j] = np.array([arr[0], arr[1]]) - mid_rt
-
-            elif len(arr) == 4:
-                result_segments[i][j] = np.array([arr[0], arr[1], arr[2], arr[3]]) - mid_rt
-            else:
-                ValueError('Out of test')
-
-    return result_segments
-
-
-def find_intersections(
-        segment: np.ndarray,
-        d_rt: float,
-        nx_resolution: int,
-        smooth: bool = True,  # Флаг для включения сглаживания
-        beta: float = 10.0,  # Параметр "резкости" перехода
-        plot: bool = False,
-) -> np.ndarray:
-    """
-    Возвращает бинарную или сглаженную маску пересечений отрезков с вектором global_vec
-    Нужно передать весь массив сегментов
-
-    Параметры:
-        segment (np.ndarray): массив с данными отрезков
-                               (shape: [n_stacks, variable-length arrays])
-        d_rt (float): Параметр для построения global_vec
-        nx_resolution (int): Количество точек в векторе сканирования
-        smooth (bool): Если True, возвращает плавные веса вместо 0/1.
-        beta (float): Параметр резкости перехода (больше → резче).
-
-    Return:
-        Матрица размером (Nx, 1) Со значением 1 где есть материал, и 0 где его нет
-    """
-    global_vec = np.linspace(-0.5 * d_rt, 0.5 * d_rt, nx_resolution)
-    result = np.zeros(nx_resolution, dtype=np.float32)  # Теперь float
-
-    segments_stacks = segment[:]
-
-    for stack_idx, points in enumerate(segments_stacks):
-        pts = np.asarray(points).ravel()
-
-        if pts.size == 2:
-            starts_ends = [(pts[0], pts[1])]
-        elif pts.size == 4:
-            starts_ends = [(pts[0], pts[1]), (pts[2], pts[3])]
-        else:
-            continue
-
-        for start, end in starts_ends:
-            # Рассчитываем расстояние до отрезка [start, end]
-            distances = []
-            for x in global_vec:
-                if x < start:
-                    d = start - x  # Расстояние до левого конца
-                elif x > end:
-                    d = x - end  # Расстояние до правого конца
-                else:
-                    d = -1.0  # Внутри отрезка (отрицательное)
-                distances.append(d)
-
-            distances = np.array(distances)
-
-            if smooth:
-                # Применяем сигмоиду к расстояниям
-                arg = -beta * (-distances)  # -distances: внутри → положительные
-                arg = np.clip(arg, -500, 500)  # предотвращаем переполнение
-                weights = 1 / (1 + np.exp(arg))
-                result = np.maximum(result, weights)  # Объединяем пересечения
-            else:
-                # Бинарная маска (старая логика)
-                mask = (global_vec >= start) & (global_vec <= end)
-                result[mask] = 1.0
-
-    if plot:
-        # Визуализация
-        plt.figure(figsize=(12, 4))
-        plt.stem(np.linspace(-d_rt / 2, d_rt / 2, nx_resolution), result)
-        plt.title("Карта пересечений")
-        plt.xlabel("Позиция")
-        plt.ylabel("Наличие пересечения")
-        plt.show()
-
-    return result
-
 """
 SIMULATION
 """
-def infill_geometry(shape_params, geometry):
-    centers, width = get_width_and_center(shape_params, plot = True)
-    # add sub
-    geometry.append(mp.Block(
-        material=conf.in_material,
-        size=mp.Vector3(conf.in_sub, mp.inf, 0),
-        center=mp.Vector3(conf.sub_center.x),
-    ))
-    # add atoms
-    for i in range(conf.orders):
-        for j in range(conf.stack + 1):
-            for k in range (centers[i, j].size):
-                if width[i][j][k] < conf.LIMIT_SHAPE: continue
-                else:
-                    ###---positive infilling---###
-                    geometry.append(mp.Block(
-                        material=conf.at_material,
-                        size=mp.Vector3(x=conf.at_hei, y=width[i][j][k], z=0),
-                        center=mp.Vector3(x=conf.at_center.x, y=centers[i][j][k], z=0)
-                    ))
-    return geometry
-
-
 def setup_simulation(geometry, sources, df, nfreq, plot=True, coef_resolution=conf.coef_resolution):
     sim = mp.Simulation(
         cell_size=conf.cell,
@@ -543,308 +235,6 @@ def compute_I_base(sim, dtf_obj, inc_nfreq):
         I_base_list.append(I_base)
     return np.array(I_base_list)
 
-# def get_IAiry_norm_simulation_new(
-#         monitor,
-#         cell,
-#         frequents_array: list = conf.inc_frequents_array,
-#         max_run_time: int = conf.maximum_run_time,
-#         load: str = None,
-#         save: bool = False,
-#         symmetries=None,
-# ):
-#     """
-#     Definition:
-#     Run a separate simulation per frequency and compute normalized IAiry.
-#     Note. Assuming, according to diaphragm, not aperture
-#
-#     :param monitor: single NearRegion monitor
-#     :param frequents_array: list of center frequencies
-#     :param max_run_time: maximum simulation run time
-#     :param load: filename to load precomputed IAiry_norm array
-#     :param save: whether to save the computed result
-#     :param symmetries: simulation symmetries
-#     :return: IAiry_norm array shape (ff_resolution, nfreq), last sim object
-#     """
-#     # Load precomputed data if available
-#     if load is not None:
-#         IAiry_norm = np.load(load)
-#         print(f"Data from {load} loaded successfully.")
-#         sim = None
-#         return IAiry_norm, sim
-#
-#     # Placeholder for normalized results
-#     results = []
-#     sim = None
-#
-#     for idx, freq in enumerate(frequents_array):
-#         # Define source for this frequency
-#         src = my_sources.FocusedPlaneWaveSource(
-#             frequency=freq,
-#             diaphragm=conf.diaphragm,
-#             center=mp.Vector3(0, 0, 0),
-#             focus_point=mp.Vector3(x=conf.f, y=0)
-#         ).get_sources()
-#
-#         # Initialize simulation for this single frequency
-#         sim = mp.Simulation(
-#             cell_size=cell,
-#             boundary_layers=[mp.PML(thickness=conf.pml, direction=mp.ALL, side=mp.ALL)],
-#             sources=[src],
-#             resolution=conf.min_resolution * conf.coef_resolution,
-#             symmetries=symmetries,
-#         )
-#
-#         # Define monitors for this sim
-#         n2f = sim.add_near2far(freq, 0, 1, monitor)
-#         dtf = sim.add_flux(
-#             freq, 0, 1,
-#             mp.FluxRegion(center=conf.flux_center, size=mp.Vector3(y=cell.y))
-#         )
-#
-#         # Run simulation
-#         sim.run(until=max_run_time)
-#
-#         # Compute base and measured intensities
-#         IAiry_base = compute_I_base(sim, [dtf], 1)
-#         IAiry_meas = get_I(
-#             sim,
-#             [n2f],
-#             conf.ff_res,
-#             mp.Vector3(0, conf.spot_ff, 0),
-#             out_angle_in_deg=0,
-#             f=conf.f
-#         )
-#
-#         # Normalize and store result
-#         I_norm = IAiry_meas / IAiry_base
-#
-#         results.append(I_norm)
-#
-#     # Stack results to array shape (ff_res, nfreq)
-#     IAiry_norm = np.stack(results, axis=1)
-#
-#     # Save results if requested
-#     if save:
-#         filename = f"Airy_simulation_D={conf.aperture}_f={conf.f}_diaph={conf.diaphragm}_res={conf.coef_resolution}_.npy"
-#         np.save(filename, IAiry_norm)
-#         print(f"Simulation result saved to: {filename}")
-#
-#     return IAiry_norm, sim
-
-# def get_IAiry_norm_simulation_new(
-#         monitor,
-#         cell,
-#         frequents_array: list = conf.inc_frequents_array,
-#         max_run_time: int = conf.maximum_run_time,
-#         symmetries=None,
-#         filename: str = None,
-# ):
-#     """
-#     Run a separate simulation per frequency and compute normalized IAiry.
-#
-#     :param monitor: single NearRegion monitor
-#     :param frequents_array: list of center frequencies
-#     :param max_run_time: maximum simulation run time
-#     :param symmetries: simulation symmetries
-#     :param filename: optional filename to save/load results
-#     :param reload: if True, attempt to load from `filename` first
-#     :return: IAiry_norm array shape (ff_resolution, nfreq), last sim object
-#     """
-#
-#     if filename is None:
-#         filename = f"Airy_simulation_D={conf.aperture}_f={conf.f}_diaph={conf.diaphragm}_res={conf.coef_resolution}.npy"
-#     else:
-#         if os.path.exists(filename):
-#             IAiry_norm = np.load(filename)
-#             print(f"Data from {filename} loaded successfully.")
-#             return IAiry_norm, None
-#         else:
-#             ValueError(f"path does not exist: {filename}")
-#
-#     # Placeholder for normalized results
-#     results = []
-#     sim = None
-#
-#     for idx, freq in enumerate(frequents_array):
-#         src = my_sources.FocusedPlaneWaveSource(
-#             frequency=freq,
-#             diaphragm=conf.diaphragm,
-#             center=mp.Vector3(0, 0, 0),
-#             focus_point=mp.Vector3(x=conf.f, y=0)
-#         ).get_sources()
-#
-#         sim = mp.Simulation(
-#             cell_size=cell,
-#             boundary_layers=[mp.PML(thickness=conf.pml, direction=mp.ALL, side=mp.ALL)],
-#             sources=[src],
-#             resolution=conf.min_resolution * conf.coef_resolution,
-#             symmetries=symmetries,
-#         )
-#
-#         n2f = sim.add_near2far(freq, 0, 1, monitor)
-#         dtf = sim.add_flux(
-#             freq, 0, 1,
-#             mp.FluxRegion(center=conf.flux_center, size=mp.Vector3(y=cell.y))
-#         )
-#
-#         sim.run(until=max_run_time)
-#         IAiry_base = compute_I_base(sim, [dtf], 1)
-#         IAiry_mean = get_I(
-#             sim,
-#             [n2f],
-#             conf.ff_res,
-#             mp.Vector3(0, conf.spot_ff, 0),
-#             out_angle_in_deg=0,
-#             f=conf.f
-#         )
-#
-#         I_norm = IAiry_mean / IAiry_base
-#         results.append(I_norm)
-#
-#     # Stack results to array shape (ff_res, nfreq)
-#     IAiry_norm = np.stack(results, axis=1)
-#
-#     np.save(filename, IAiry_norm)
-#     print(f"Simulation result saved to: {filename}")
-#
-#     return IAiry_norm, sim
-
-# def get_IAiry_norm_simulation(
-#         monitor,
-#         cell,
-#         frequents_array: list = conf.inc_frequents_array,
-#         max_run_time: int = conf.maximum_run_time,
-#         symmetries=None,
-#         filename: str = None,
-# ):
-#     """
-#     Run a separate simulation per frequency and compute normalized IAiry.
-#
-#     :param monitor: single NearRegion monitor
-#     :param frequents_array: list of center frequencies
-#     :param max_run_time: maximum simulation run time
-#     :param symmetries: simulation symmetries
-#     :param filename: optional filename to save/load results
-#     :return: IAiry_norm array shape (ff_resolution, nfreq), last sim object
-#     """
-#     if filename is None:
-#         filename = f"Airy_simulation_D={conf.aperture}_f={conf.f}_diaph={conf.diaphragm}_res={conf.coef_resolution}.npy"
-#     else:
-#         if os.path.exists(filename):
-#             IAiry_norm = np.load(filename)
-#             print(f"Data from {filename} loaded successfully.")
-#             return IAiry_norm, None
-#         else:
-#             ValueError(f"path does not exist: {filename}")
-#
-#     # Placeholder for normalized results
-#     base_results = []
-#     results = []
-#     sim = None
-#
-#     for idx, freq in enumerate(frequents_array):
-#         src = my_sources.PlaneWaveSource(
-#             frequency=freq,
-#             diaphragm=conf.diaphragm,
-#             center=mp.Vector3(0, 0, 0),
-#         ).get_sources()
-#
-#         sim = mp.Simulation(
-#             cell_size=cell,
-#             boundary_layers=[mp.PML(thickness=conf.pml, direction=mp.ALL, side=mp.ALL)],
-#             sources=[src],
-#             resolution=conf.min_resolution * conf.coef_resolution,
-#             symmetries=symmetries,
-#         )
-#         n2f = sim.add_near2far(freq, 0, 1, monitor)
-#         sim.run(until=max_run_time)
-#
-#         IAiry_one_wave = get_I(
-#             sim,
-#             [n2f],
-#             conf.ff_res,
-#             mp.Vector3(0, conf.spot_ff, 0),
-#             out_angle_in_deg=0,
-#             f=conf.f
-#         )
-#         IAiry_base = np.mean(IAiry_one_wave, axis=0)
-#         base_results.append(IAiry_base)
-#
-#         src = my_sources.FocusedPlaneWaveSource(
-#             frequency=freq,
-#             diaphragm=conf.diaphragm,
-#             center=mp.Vector3(0, 0, 0),
-#             focus_point=mp.Vector3(x=conf.f, y=0)
-#         ).get_sources()
-#
-#         sim = mp.Simulation(
-#             cell_size=cell,
-#             boundary_layers=[mp.PML(thickness=conf.pml, direction=mp.ALL, side=mp.ALL)],
-#             sources=[src],
-#             resolution=conf.min_resolution * conf.coef_resolution,
-#             symmetries=symmetries,
-#         )
-#
-#         n2f = sim.add_near2far(freq, 0, 1, monitor)
-#         sim.run(until=max_run_time)
-#         IAiry_mean = get_I(
-#             sim,
-#             [n2f],
-#             conf.ff_res,
-#             mp.Vector3(0, conf.spot_ff, 0),
-#             out_angle_in_deg=0,
-#             f=conf.f
-#         )
-#         I_norm = IAiry_mean / IAiry_base
-#         results.append(I_norm)
-#
-#     # Stack results to array shape (ff_res, nfreq)
-#     IAiry_norm = np.stack(results, axis=1)
-#     np.save(filename, IAiry_norm)
-#     print(f"Simulation result saved to: {filename}")
-#     return IAiry_norm, base_results, sim
-
-# def get_Ibase_batch_simulation(
-#         sources_batch: list,
-#         cell,
-#         frequents_array: list = conf.inc_frequents_array,
-#         max_run_time: int = conf.maximum_run_time,
-#         symmetries=None,
-#         filename: str = None,
-#         reload: bool = False,
-# ):
-#     """
-#     Wrapper: run multiple simulations with different source sets
-#     and return concatenated IPlane_base results only.
-#     """
-#
-#     if filename is None:
-#         filename = f"IPlane_base_D={conf.aperture}_f={conf.f}_diaph={conf.diaphragm}_res={conf.coef_resolution}.npy"
-#
-#     if reload and os.path.exists(filename):
-#         IPlane_base_all = np.load(filename, allow_pickle=True)
-#         print(f"Data from {filename} loaded successfully.")
-#         return IPlane_base_all
-#
-#     results = []
-#     n_sources = len(sources_batch)
-#
-#     for idx, sources in enumerate(sources_batch, start=1):
-#         print(f"Running simulation {idx}/{n_sources}...")
-#         IPlane_base, _ = get_Ibase_simulation(
-#             sources=sources,
-#             cell=cell,
-#             frequents_array=frequents_array,
-#             max_run_time=max_run_time,
-#             symmetries=symmetries,
-#         )
-#         results.append(IPlane_base)
-#
-#     np.save(filename, results)
-#     print(f"Simulation result saved to: {filename}")
-#
-#     return results
-
 def get_Ibase_batch_simulation(
         monitor,
         sources_batch: list,
@@ -909,7 +299,7 @@ def get_IAiry_norm_simulation(
         symmetries=None,
         filename_focus_airy: str = None,
         filename_base_airy: str = None,
-        get_base: bool = False
+        get_base: bool = False,
 ):
     """
     Run a separate simulation per frequency and compute normalized IAiry.
@@ -1002,6 +392,7 @@ def get_IAiry_norm_simulation(
             out_angle_in_deg=0,
             f=conf.f
         )
+
         results.append(IAiry_focus_single_wave)
 
     # Stack results to array shape (ff_res, nfreq)
@@ -1015,58 +406,6 @@ def get_IAiry_norm_simulation(
     np.save(filename_base_airy, IAiry_base)
     print(f"Simulation base result saved to: {filename_base_airy}")
     return IAiry_focus, IAiry_base, sim
-
-# def get_Ibase_simulation(
-#         monitor,
-#         sources: list,
-#         cell,
-#         frequents_array: list = conf.inc_frequents_array,
-#         max_run_time: int = conf.maximum_run_time,
-#         symmetries = None,
-#
-# ):
-#     """
-#     Definition: use function to get I_base simulated bunch waves for further normalization
-#     :param monitor: single NearRegion monitor
-#     :param angle:
-#     :param frequents_array:
-#     :param max_run_time:
-#     :return:
-#     """
-#     results = []
-#     sim = None
-#
-#     geometry = [mp.Block(
-#         material=conf.in_material,
-#         size=mp.Vector3(conf.in_sub, mp.inf, 0),
-#         center=mp.Vector3(conf.sub_center.x),
-#     )]
-#
-#     for idx, freq in enumerate(frequents_array):
-#         sim = mp.Simulation(
-#             cell_size=cell,
-#             boundary_layers=[mp.PML(thickness=conf.pml, direction=mp.X, side=mp.ALL)],
-#             sources=sources,
-#             geometry=geometry,
-#             resolution=conf.min_resolution * conf.coef_resolution,
-#             symmetries = symmetries, # При наклонном падении света симметрию использовать нельзя
-#         )
-#
-#         # add monitors
-#         n2f = sim.add_near2far(freq, 0, 1, monitor)
-#         sim.run(until=max_run_time)
-#
-#         IBase_one_wave = get_I(
-#             sim,
-#             [n2f],
-#             conf.ff_res,
-#             mp.Vector3(0, conf.spot_ff, 0),
-#             out_angle_in_deg=0,
-#             f=conf.f
-#         )
-#         results.append(IBase_one_wave)
-#
-#     return results, sim
 
 def get_Ibase_simulation(
         monitor,
@@ -1105,7 +444,7 @@ def get_Ibase_simulation(
     for freq in frequents_array:
         near2far_regions.append(
             sim.add_near2far(
-                freq,           # центральная частота
+                freq,     # центральная частота
                 conf.inc_df,    # ширина спектра
                 1,              # дискретность
                 monitor
@@ -1201,56 +540,42 @@ def get_indx_orders(index_angle):
 PLOT
 """
 
-def get_plot_intensity_multiply(spot_ff, I_ff_list, angle):
+def get_plot_intensity(I_ff, out_angle_in_deg, wavelength_array, abscissa, I_airy=None, isfwhm=True):
     """
-    :param spot_ff: размер области расчета
-    :param I_ff_list: список массивов интенсивности (каждый нормализован от 0 до 1),
-                      либо один массив (не в списке)
-    :param angle: угол падения
+    :param I_ff: intensity values (normalized from 0 to 1)
+    :param out_angle_in_deg: angle to refraction
+    :param wavelength_array: array of wavelengths
+    :param abscissa: X-axis coordinates
+    :param I_airy: intensity values (for example, from the Airy function), normalized
+    :param isfwhm: print flag FWHM
     """
-    # Убедимся, что вход всегда список массивов
-    if not isinstance(I_ff_list, list):
-        I_ff_list = [I_ff_list]
 
-    plt.figure(dpi=100)
-
-    # Отображение каждой кривой
-    for idx, I_ff in enumerate(I_ff_list):
-        abscissa = get_abscissa(spot_ff, I_ff, angle)
-        label = f"Intensity {idx + 1}" if len(I_ff_list) > 1 else f"Far field ({conf.inc_wavelength} μm)"
-        plt.plot(abscissa, I_ff, label=label)
-
-    plt.xlabel(f"x coordinate in µm")
-    plt.ylabel(r"Normalized energy density, |E$_z$|$^2$ (0...1)")
-    plt.title(f"Intensity of CC lens. Incident {angle}°")
-    plt.legend(loc="upper right")
-    plt.tight_layout()
-    plt.show()
-
-def get_plot_intensity(I_ff, out_angle_in_deg, wavelength_array, abscissa, isfwhm = True):
-    """
-    :param spot_ff: размер области расчета
-    :param I_ff: значения интенсивностей (нормализованные от 0 до 1)
-    :param out_angle_in_deg: угол до преломления
-    :param is_loc: локальная оптимизация или глобальные
-
-    """
     plt.style.use('default')
     plt.figure(dpi=100)
 
+    # --- Far field intensity ---
     if len(wavelength_array) == 1:
         plt.plot(abscissa, I_ff, label=f"Far field ({conf.inc_wavelength} μm)")
+        if I_airy is not None:
+            plt.plot(abscissa, I_airy, '--', label="Airy pattern")
     else:
         for i in range(I_ff.shape[1]):
-            plt.plot(abscissa, I_ff[:, i], label=f"Far field (wavelength {wavelength_array[i]})")
+            plt.plot(abscissa, I_ff[:, i], label=f"Far field (λ={wavelength_array[i]} μm)")
+            if I_airy is not None:
+                if I_airy.ndim == 1:
+                    plt.plot(abscissa, I_airy, '--', label="Airy pattern")
+                else:
+                    plt.plot(abscissa, I_airy[:, i], '--', label=f"Airy pattern (λ={wavelength_array[i]} μm)")
 
+    # --- Axes & legend ---
     plt.xlabel(f"x coordinate [µm]")
     plt.ylabel(r"Normalized energy density, |E$_z$|$^2$ (0...1)")
-    plt.title(f"Intensity of CC lens. Out Incident {np.around(out_angle_in_deg, decimals = 1 )} degree")
+    plt.title(f"Intensity of CC lens. Out Incident {np.around(out_angle_in_deg, decimals=1)} degree")
     plt.legend(loc="upper right")
     plt.tight_layout()
     plt.show()
 
+    # --- FWHM printout ---
     if isfwhm:
         if len(wavelength_array) == 1:
             fwhm = get_fwhm(abscissa, I_ff)
@@ -1262,18 +587,18 @@ def get_plot_intensity(I_ff, out_angle_in_deg, wavelength_array, abscissa, isfwh
 
 def get_fwhm(abscissa, intensity):
     """
-    Вычисление FWHM (на уровне 0.5) и FWTM (на уровне 0.1)
-    для одномерного профиля интенсивности.
+    Calculation of FWHM (at 0.5) and FWTM (at 0.1)
+    for a one-dimensional intensity profile.
 
-    :param abscissa: массив координат (например, [мкм])
-    :param intensity: массив нормализованных интенсивностей (0...1)
+    :param abscissa:
+    :param intensity: array of normalized intensities (0...1)
     :return: (FWHM, x_left_half, x_right_half, FWTM, x_left_tenth, x_right_tenth)
     """
     center = np.argmax(intensity)
     n = len(intensity)
 
     def find_width(level):
-        """Вспомогательная функция поиска ширины на уровне level."""
+        """Auxiliary width search function at the level."""
         left_idx, right_idx = None, None
 
         # поиск влево
@@ -1288,7 +613,7 @@ def get_fwhm(abscissa, intensity):
                 break
 
         if left_idx is None or right_idx is None:
-            raise ValueError(f"Не удалось найти два пересечения на уровне {level}.")
+            raise ValueError(f"Couldn't find two level intersections {level}.")
 
         x_left = float(abscissa[left_idx])
         x_right = float(abscissa[right_idx])
@@ -1303,43 +628,33 @@ def get_fwhm(abscissa, intensity):
 
 def get_focusing_efficiency(IAiry_norm, abscissa):
     """
-    Вычисляет эффективность фокусировки как долю энергии
-    в интервале ширины airy_diameter относительно центра профиля.
+    Calculates focusing efficiency as a fraction of energy
+    in the airy_diameter width range relative to the center of the profile.
 
-    Parameters
-    ----------
-    IAiry_norm : array_like
-        Нормализованный (на максимум) вектор или матрица интенсивностей.
-        - Если размерность (n,), то n точек профиля для одной длины волны.
-        - Если размерность (n, m), то m разных длин волн, каждая колонка — отдельный профиль.
-    spot_ff, out_angle_in_deg, shift : параметры для get_abscissa
-        Используются для генерации координат абсцисс.
+    :param IAiry_norm : array_like
+        normalized (to maximum) vector or intensity matrix.
+        - If the dimension is (n,), then there are n profile points for one wavelength.
+        - If the dimension is (n, m), then there are m different wavelengths, each column is a separate profile.
+    :param spot_ff, out_angle_in_deg, shift : params for method get_abscissa
+        Used to generate the coordinates of the abscissa.
 
-    Returns
-    -------
-    eta : float или ndarray
-        Эффективность фокусировки (0..1).
-        - float, если m=1
-        - ndarray формы (m,), если m>1
+    :return eta : float or ndarray
+        Focusing efficiency (0..1).
+        - float if m=1
+        - ndarray of the form (m,) if m>1
     """
     IAiry_norm = np.atleast_2d(IAiry_norm)
     if IAiry_norm.shape[0] == 1:  # приведение к (n, m), а не (1, n)
         IAiry_norm = IAiry_norm.T
 
     n, m = IAiry_norm.shape
-
-    # получаем ось абсцисс (одна для всех длин волн)
     dx = np.mean(np.diff(abscissa))
-
-    # центр диапазона координат
     center = 0.5 * (abscissa[0] + abscissa[-1])
-
-    # поддержка скаляра и вектора airy_diameter
     airy_diam = np.atleast_1d(conf.airy_diameter)
     if airy_diam.size == 1 and m > 1:
         airy_diam = np.full(m, airy_diam.item())
     elif airy_diam.size != m:
-        raise ValueError("conf.airy_diameter должен быть скаляром или массивом длины m")
+        raise ValueError(f"conf.airy_diameter must be a scalar or an array of length {m}")
 
     eta = np.zeros(m)
     for j in range(m):
@@ -1355,53 +670,65 @@ def plot_psf(
     spot_ff: Union[float, Sequence[float]],
     I: np.ndarray,
     abscissa,
+    save_path: str = None,
+    save_format: str = "pdf",
 ) -> None:
     """
-    Строит и отображает PSF (Point Spread Function) на основе одномерного или двумерного
-    распределения интенсивности. Если передана `abscissa`, она будет использована в качестве
-    оси x, иначе она будет рассчитана автоматически.
+    Builds and displays a PSF (Point Spread Function) based on a one-dimensional or two-dimensional
+    intensity distribution. Supports saving to PDF or JPEG.
 
-    Parameters
-    ----------
-    nfrec : int
-        Число подграфиков (дискретность длин волн).
-    spot_ff : float или array_like
-        Пространственная область (например, апертура), на которой заданы интенсивности.
-    I : ndarray
-        Массив интенсивностей:
-        - если форма (M,), то будет построен один PSF;
-        - если форма (M, N), то будет построено N PSF.
 
-    Raises
-    ------
-    ValueError
-        Если `I` имеет размерность, отличную от 1 или 2.
+    :param nfrec : int
+        The number of subgraphs (wavelength discreteness).
+    :param spot_ff : float or array_like
+        Spatial area (for example, an aperture) on which the intensities are set.
+    :param I : ndarray
+        Array of intensities:
+        - if the shape is (M,), then one PSF will be constructed;
+        - if the shape is (M, N), then N PSFs will be constructed.
+    :param abscissa : array_like
+        An array of coordinates along the X-axis.
+    :param save_path : str, optional
+        The path to save the file (for example, "psf_plot.pdf" or "psf_plot.jpeg ").
+        If None, the graph is simply displayed on the screen.
+    :param save_format : str, optional
+        Save format: "pdf" or "jpeg". The default is "pdf".
     """
+
+    # --- Настройки оформления ---
+    plt.rcParams.update({
+        "font.family": "sans-serif",
+        "font.sans-serif": ["Arial", "Liberation Sans", "DejaVu Sans"],
+        "axes.labelsize": 13,
+        "axes.titlesize": 14,
+        "legend.fontsize": 11,
+        "xtick.labelsize": 11,
+        "ytick.labelsize": 11,
+        "axes.linewidth": 1.0,
+    })
 
     # Проверка формы входных данных
     I = np.asarray(I)
     if I.ndim == 1:
-        # Преобразуем к двумерному виду (M, 1)
         I = I[:, np.newaxis]
     elif I.ndim != 2:
-        raise ValueError(f"Ожидается 1D или 2D массив, получили массив с ndim={I.ndim}")
+        raise ValueError(f"Ожидается 1D или 2D массив, получили ndim={I.ndim}")
 
-    # Выбираем абсциссу: пользовательскую или автоматически вычисленную
+    # Координаты
     x_plot = abscissa
     x_calculate = get_abscissa(spot_ff, I[:, 0], 0)
 
-    # Создаём сетку для интерполяции
+    # Сетка
     X, Y = np.meshgrid(x_calculate, x_calculate)
-    R = np.hypot(X, Y)  # Более «профессиональный» способ sqrt(X**2+Y**2)
+    R = np.hypot(X, Y)
 
     # Подготовка фигуры
-    fig, axes = plt.subplots(1, nfrec, figsize=(6 * nfrec, 6), squeeze=False)
+    fig, axes = plt.subplots(1, nfrec, figsize=(6 * nfrec, 6), squeeze=False, dpi=300)
     axes = axes.ravel()
-
     wavelength_array = conf.inc_wavelength_array
+
     for idx in range(nfrec):
         if idx >= I.shape[1]:
-            # Если колонок меньше, чем nfrec, заполняем нулями
             intensity = np.zeros_like(x_calculate)
         else:
             intensity = I[:, idx]
@@ -1419,124 +746,36 @@ def plot_psf(
             extent=(x_plot[0], x_plot[-1], x_calculate[0], x_calculate[-1]),
             origin="lower",
             cmap="viridis",
-            # cmap = "hot",
             aspect="equal",
         )
 
-
-        if len(wavelength_array) == 1:
-            axes[idx].set(
-                title=f"PSF for {conf.inc_wavelength}",
-                xlabel="Spot [μm]",
-                ylabel="Spot [μm]",
-            )
-        else:
-            axes[idx].set(
-                title=f"PSF for {wavelength_array[idx]}",
-                xlabel="Spot [μm]",
-                ylabel="Spot [μm]",
-            )
+        title = (
+            f"PSF for {conf.inc_wavelength:.3f} μm"
+            if len(wavelength_array) == 1
+            else f"PSF for {wavelength_array[idx]:.3f} μm"
+        )
+        axes[idx].set(
+            title=title,
+            xlabel="Spot [μm]",
+            ylabel="Spot [μm]",
+        )
         fig.colorbar(im, ax=axes[idx], label="Normalized intensity")
 
+    # --- Заголовок и разметка ---
     plt.tight_layout()
     fig.suptitle(f"Resolution: {len(x_plot)} pixels", fontsize=16, color="blue", y=1.02)
-    plt.show()
 
-# def plot_mtf(
-#         spot_ff: Union[float, Sequence[float]],
-#         I_ff: np.ndarray,
-#         in_angle_in_deg: float,
-#         out_angle_in_deg: float,
-#         max_view: float = 50,
-#         dif_lim=False,
-#         smooth=False,
-# ) -> None:
-#     """
-#     Строит кривую MTF на основе распределения интенсивности в фокальной плоскости.
-#
-#     Parameters
-#     ----------
-#     spot_ff : float или array_like
-#         Пространственная область (например, апертура).
-#     I_ff : ndarray
-#         Массив интенсивностей PSF (1D или 2D).
-#     dif_lim : bool
-#         Вкл значения для идеального случая
-#     """
-#
-#     # Проверка и подготовка данных
-#     I_ff = np.asarray(I_ff)
-#     if I_ff.ndim == 1:
-#         I_ff = I_ff[:, np.newaxis]
-#
-#     # Получение пространственных координат
-#     x = get_abscissa(spot_ff, I_ff[:, 0], angle = 0)
-#     dx = np.abs(x[1] - x[0])  # Шаг дискретизации в микронах
-#     dx_mm = dx * 1e-3  # Шаг дискретизации в mm
-#     print(f"len of x = {len(x)}")
-#
-#     # Расчет частотной сетки
-#     N = len(x)
-#     freq = np.fft.fftfreq(N, d=dx_mm)[:N // 2 + 1]  # Берем первую половину. [1/μm]
-#     # Подготовка графика
-#     wavelength_array = conf.inc_wavelength_array
-#
-#     for i in range(I_ff.shape[1]):
-#         # Нормализация PSF
-#         psf = I_ff[:, i]
-#         psf /= np.sum(psf)
-#
-#         # Расчет MTF
-#         mtf = np.abs(fft(psf))[:N // 2 + 1]
-#         mtf_normalized = mtf / mtf.max()
-#
-#         # Построение кривой
-#         label = (
-#             f"MTF ({wavelength_array[i]} μm)"
-#             if len(wavelength_array) > 1
-#             else "MTF"
-#         )
-#
-#         if smooth:
-#             # Применяем фильтр к рассчитанному MTF
-#             window_length = 7  # Должно быть нечетным и меньше размера данных
-#             polyorder = 2
-#             mtf_normalized = savgol_filter(mtf_normalized, window_length, polyorder)
-#             print(f"smooth x = {len(mtf_normalized)}")
-#
-#         plt.plot(freq, mtf_normalized, label=label)
-#
-#     theta_rad = np.radians(in_angle_in_deg)
-#
-#     if dif_lim:
-#         # если у нас несколько длин волн — работаем по каждой
-#         for lam in wavelength_array:
-#             # переводим λ из мкм в мм
-#             lam_mm = lam * 1e-3
-#             # предельная частота в lp/mm
-#             fc = 1 / lam_mm
-#             # коррекция частоты
-#             fc_eff = fc * np.cos(theta_rad)
-#             # задаём сетку частот от 0 до fc_eff
-#             f_ratio = np.linspace(0, fc_eff, 200)
-#             # считаем теоретическую MTF
-#             mtf_th = (2 / np.pi) * (
-#                 np.arccos(f_ratio / fc_eff)
-#                 - (f_ratio / fc_eff) * np.sqrt(1 - (f_ratio / fc_eff) ** 2)
-#             )
-#             # строим штриховую линию для каждой λ
-#             plt.plot(f_ratio, mtf_th, linestyle='--', label=f'Diffraction limit {lam} µm')
-#
-#     # Настройка осей
-#     plt.xlim(0, max_view)  # Только положительные частоты
-#     plt.xlabel("Spatial Frequency (lp/mm)")
-#     plt.ylabel("Contrast (MTF)")
-#     plt.title(f"Modulation Transfer Function for {np.around(out_angle_in_deg, decimals= 1)} deg")
-#     plt.ylim(0, 1.1)
-#     plt.grid(False)
-#     plt.legend()
-#     plt.tight_layout()
-#     plt.show()
+    # --- Сохранение / вывод ---
+    if save_path:
+        save_format = save_format.lower()
+        if save_format not in ["pdf", "jpeg"]:
+            raise ValueError("save_format must be 'pdf' or 'jpeg'")
+
+        fig.savefig(save_path, format=save_format, bbox_inches="tight")
+        print(f"PSF plot saved to: {save_path}")
+
+    else:
+        plt.show()
 
 def plot_mtf(
         spot_ff: Union[float, Sequence[float]],
@@ -1547,100 +786,102 @@ def plot_mtf(
         smooth: bool = False,
         dif_lim: bool = False,
         I_mtf_theory: np.ndarray = None,
+        save_path: str = None,
+        save_format: str = "pdf"
 ) -> None:
     """
-    Строит кривую MTF на основе распределения интенсивности в фокальной плоскости.
+    Builds an MTF curve based on the intensity distribution in the focal plane.
+    It can save the result to PDF or JPEG.
 
     Parameters
     ----------
-    spot_ff : float или array_like
-        Пространственная область (например, апертура).
+spot_ff : float or array_like
+Spatial area (for example, an aperture).
     I_ff : ndarray
-        Массив интенсивностей PSF (1D или 2D).
+        An array of PSF intensities (1D or 2D).
     in_angle_in_deg : float
-        Угол на входе.
+        The angle at the entrance.
     out_angle_in_deg : float
-        Угол на выходе.
+        The angle at the exit.
     max_view : float
-        Максимальная частота на графике (lp/mm).
-    dif_lim : bool
-        Включать значения для идеального случая.
+        The maximum frequency on the graph (lp/mm).
     smooth : bool
-        Сглаживание рассчитанных MTF.
+        Smoothing of calculated MTFs.
+    dif_lim : bool
+        Include values for the ideal case.
     I_mtf_theory : ndarray
-        Предварительно рассчитанные значения идеальной MTF.
-        Если переданы, то расчет дифракционного предела внутри функции не выполняется.
+        The pre-calculated values of the ideal MTF.
+    save_path : str
+        The path to the file to save (for example, "mtf_plot.pdf" or "mtf_plot.jpeg ").
+        If None, the graph is simply displayed on the screen.
+    save_format : str
+        Save format: "pdf" or "jpeg".
     """
 
-    # Проверка и подготовка данных
+    # --- Design Settings ---
+    plt.rcParams.update({
+        "font.family": "sans-serif",
+        "font.sans-serif": ["Arial", "Liberation Sans", "DejaVu Sans"],
+        "axes.labelsize": 13,
+        "axes.titlesize": 14,
+        "legend.fontsize": 11,
+        "xtick.labelsize": 11,
+        "ytick.labelsize": 11,
+        "axes.linewidth": 1.0,
+    })
+
     I_ff = np.asarray(I_ff)
     if I_ff.ndim == 1:
         I_ff = I_ff[:, np.newaxis]
 
     # Получение пространственных координат
     x = get_abscissa(spot_ff, I_ff[:, 0], angle=0)
-    dx = np.abs(x[1] - x[0])  # Шаг дискретизации в микронах
-    dx_mm = dx * 1e-3  # Шаг дискретизации в mm
-    print(f"len of x = {len(x)}")
-
-    # Расчет частотной сетки
+    dx = np.abs(x[1] - x[0])
+    dx_mm = dx * 1e-3
     N = len(x)
-    freq = np.fft.fftfreq(N, d=dx_mm)[:N // 2 + 1]  # Берем первую половину. [1/μm]
-    # Подготовка графика
-    wavelength_array = conf.inc_wavelength_array
 
+    freq = np.fft.fftfreq(N, d=dx_mm)[:N // 2 + 1]
+
+    wavelength_array = conf.inc_wavelength_array
     theta_rad = np.radians(in_angle_in_deg)
 
+    fig, ax = plt.subplots(dpi=300)
+
+    # --- Основной расчёт и построение ---
     for i in range(I_ff.shape[1]):
-        # Нормализация PSF
         psf = I_ff[:, i]
         psf /= np.sum(psf)
 
-        # Расчет MTF
         mtf = np.abs(fft(psf))[:N // 2 + 1]
         mtf_normalized = mtf / mtf.max()
 
-        # Построение кривой
-        label = (
-            f"optimized ({wavelength_array[i]} μm)"
-        )
-
         if smooth:
-            # Применяем фильтр к рассчитанному MTF
-            window_length = 7  # Должно быть нечетным и меньше размера данных
+            window_length = 7
             polyorder = 2
             mtf_normalized = savgol_filter(mtf_normalized, window_length, polyorder)
-            print(f"smooth x = {len(mtf_normalized)}")
 
-        plt.plot(freq, mtf_normalized, label=label)
+        label = f"optimized ({wavelength_array[i]:.3f} μm)"
+        ax.plot(freq, mtf_normalized, label=label)
 
+    # --- Дифракционный предел ---
     if dif_lim:
         if I_mtf_theory is not None:
-            # Используем готовые значения
             for i in range(I_mtf_theory.shape[1]):
-                # Нормализация PSF
                 psf = I_mtf_theory[:, i]
                 psf /= np.sum(psf)
-
-                # Расчет MTF
                 mtf = np.abs(fft(psf))[:N // 2 + 1]
                 mtf_normalized = mtf / mtf.max()
 
-                # Построение кривой
-                label = (
-                    f"limit_sim ({wavelength_array[i]} μm)"
-                )
                 if smooth:
-                    # Применяем фильтр
-                    window_length = 7  # Должно быть нечетным и меньше размера данных
+                    window_length = 7
                     polyorder = 2
                     mtf_normalized = savgol_filter(mtf_normalized, window_length, polyorder)
-                    print(f"smooth x = {len(mtf_normalized)}")
 
-                plt.plot(freq, mtf_normalized, linestyle='--', label=label)
+                ax.plot(freq, mtf_normalized, linestyle='--',
+                        label=f"limit_sim ({wavelength_array[i]:.3f} μm)")
         else:
             for lam in wavelength_array:
-                lam_mm = lam * 1e-3  # переводим λ из мкм в мм
+                lam_mm = lam * 1e-3
                 fc = 1 / lam_mm
                 fc_eff = fc * np.cos(theta_rad)
                 f_ratio = np.linspace(0, fc_eff, 200)
@@ -1648,21 +889,26 @@ def plot_mtf(
                     np.arccos(f_ratio / fc_eff)
                     - (f_ratio / fc_eff) * np.sqrt(1 - (f_ratio / fc_eff) ** 2)
                 )
-                plt.plot(
-                    f_ratio, mtf_th,
-                    linestyle='--',
-                    label=f'limit_theo {lam} µm'
-                )
+                ax.plot(f_ratio, mtf_th, linestyle='--', label=f'limit_theo {lam:.3f} µm')
 
-    # Настройка осей
-    plt.xlim(0, max_view)  # Только положительные частоты
-    plt.xlabel("Spatial Frequency (lp/mm)")
-    plt.ylabel("Contrast (MTF)")
-    plt.title(f"Modulation Transfer Function for {np.around(out_angle_in_deg, decimals=1)} deg")
-    plt.ylim(0, 1.1)
-    plt.grid(False)
-    plt.legend()
-    plt.tight_layout()
+    # --- Adj plots ---
+    ax.set_xlim(0, max_view)
+    ax.set_xlabel("Spatial Frequency (lp/mm)")
+    ax.set_ylabel("Contrast (MTF)")
+    ax.set_title(f"Modulation Transfer Function for {np.around(out_angle_in_deg, 1)}°")
+    ax.set_ylim(0, 1.1)
+    ax.legend()
+    ax.grid(False)
+    fig.tight_layout()
+
+    # --- Save ---
+    if save_path:
+        save_format = save_format.lower()
+        if save_format not in ["pdf", "jpeg"]:
+            raise ValueError("save_format must be either 'pdf' or 'jpeg'")
+        fig.savefig(save_path, format=save_format, bbox_inches="tight")
+        print(f"MTF plot saved to: {save_path}")
+
     plt.show()
 
 def setup_visualization():
@@ -1855,10 +1101,10 @@ def generate_lens_gds_2params(
 
     # Сохраняем файл
     lib.write_gds(filename)
-    print(f"GDS файл успешно сохранён: {filename}")
+    print(f"GDS saved: {filename}")
 
 # works
-def generate_lens_stl_linear(
+def generate_lens_stl_cc_linear(
     a_params,
     h_params,
     orders: int,
@@ -1870,30 +1116,26 @@ def generate_lens_stl_linear(
     filename: str = "lens_layout_linear.stl"
 ) -> None:
     """
-    Генерирует STL-модель линзы на подложке.
-    Ячейки размещаются линейно (±N копий по оси Y) и зеркально по оси X.
-    Все размерности в микронах.
+    Generates an STL model of the lens on the substrate.
+    The cells are placed linearly (±N copies on the Y axis) and mirrored on the X axis.
+    All dimensions are in microns.
     """
     a_params = np.asarray(a_params, dtype=float)
     h_params = np.asarray(h_params, dtype=float)
     rt = np.asarray(rt, dtype=float)
     substrate_thickness = substrate_thickness
 
-    assert len(a_params) == orders
-    assert len(h_params) == orders
-    assert len(rt) == orders
-
     meshes = []
 
-    # ---- Подложка ----
-    W = (N + 1) * w * 8
+    # ---- substrate ----
+    W = 20
     L = rt[-1] * 2
     H = substrate_thickness
     substrate = trimesh.creation.box(extents=(L, W, H))
     substrate.apply_translation((0, 0, H / 2))
     meshes.append(substrate)
 
-    # ---- Сегменты линзы ----
+    # ---- lens segments ----
     for m in range(orders):
         a = max(a_params[m], 1e-3)
         h = h_params[m]
@@ -1922,31 +1164,31 @@ def generate_lens_stl_linear(
         xx = np.concatenate([x, x[::-1]])
         yy = np.concatenate([y_top, y_bot[::-1]])
 
-        # ---- Генерация копий вдоль Y и зеркальные по X ----
+        # ---- Generating copies along Y and mirroring along X ----
         y_offsets = np.arange(-N, N+1) * w * 2
-        x_signs = [1, -1]  # зеркальная симметрия по X
+        x_signs = [1, -1]  # mirror symmetry in X
 
         for x_sign in x_signs:
             for y_off in y_offsets:
                 coords = np.vstack([xx * x_sign, yy + y_off]).T
                 poly = Polygon(coords)
 
-                # Очистка самопересечений и ориентация
+                # Clearing self-intersections and orientation
                 if not poly.is_valid:
                     try:
                         poly = poly.buffer(0)
                         poly = orient(poly)
                         if not poly.is_valid:
                             from shapely.validation import explain_validity
-                            print(f"⚠ После buffer(0) полигон всё ещё невалиден для сегмента {m}, смещение {y_off}")
-                            print(f"  Причина: {explain_validity(poly)}")
+                            print(f"После buffer(0) полигон всё ещё невалиден для сегмента {m}, смещение {y_off}")
+                            print(f"Причина: {explain_validity(poly)}")
                             continue
                     except Exception as e:
                         print(f"Ошибка при очистке полигона для сегмента {m}, смещение {y_off}: {e}")
                         continue
 
                 if poly.area < 1e-6:
-                    print(f"⚠ Малая площадь полигона ({poly.area:.6f}) для сегмента {m}, смещение {y_off}")
+                    print(f"Малая площадь полигона ({poly.area:.6f}) для сегмента {m}, смещение {y_off}")
 
                 # Экструзия на высоту
                 try:
@@ -1957,22 +1199,505 @@ def generate_lens_stl_linear(
                 tri.apply_translation((0, 0, substrate_thickness))
                 meshes.append(tri)
 
-    # ---- Итоговый меш ----
+    # ---- Final mesh ----
     if meshes:
         final_mesh = trimesh.util.concatenate(meshes)
         final_mesh.export(filename)
+        print(f"STL saved: {filename}")
+    else:
+        print("Нет геометрии для экспорта")
+
+
+def generate_lens_gds_cc_linear(
+        a_params,
+        rt,
+        orders: int,
+        w: float = 0.1,
+        Q: int = 100,
+        W: float = None,
+        filename: str = "lens_layout_linear.gds"
+) -> None:
+    """
+    Генерирует GDS-модель линзы.
+    Ячейки размещаются линейно (±N копий по оси Y) и зеркально по оси X.
+    Все размерности в микронах.
+
+    Параметры:
+    ----------
+    a_params : array-like
+        Оптимизационные параметры формы (по числу сегментов).
+    rt : array-like
+        Радиусы границ сегментов (в микронах).
+    orders : int
+        Количество сегментов.
+    w : float
+        Толщина одной полосы (ширина мета-ячейки) в микронах.
+    Q : int
+        Количество точек для аппроксимации профиля.
+    W : float | None
+        Общая половинная ширина структуры вдоль оси Y.
+        Если не задана, используется максимальный радиус из rt.
+    filename : str
+        Имя файла GDS для сохранения.
+    """
+    a_params = np.asarray(a_params, dtype=float)
+    rt = np.asarray(rt, dtype=float)
+
+    if W is None:
+        W = float(rt[-1])
+    N = int(np.floor(W / (2 * w)))  # число копий по оси Y
+
+    cell = gdspy.Cell("LENS")
+
+    for m in range(orders):
+        a = max(a_params[m], 1e-3)
+
+        rt0 = 0.0 if m == 0 else rt[m - 1] + 0.1
+        rt1 = rt[m]
+        x0 = 0.0 if m == 0 else (rt[m] + rt0) / 2
+
+        L_seg = np.clip(1.5 / a, 2.0, 10.0)
+        x_left = max(rt0, x0 - L_seg * a)
+        x_right = min(rt1, x0 + L_seg * a)
+        if x_right <= x_left:
+            continue
+
+        x = np.linspace(x_left, x_right, Q)
+        z = np.clip((x - x0) / a, -20, 20)
+        y_profile = a * np.cosh(z)
+
+        # центрирование профиля
+        ip = np.argmin(y_profile)
+        y_shifted = y_profile - y_profile[ip]
+
+        ymax = 0.5 * (x.max() - x.min())
+        y_top = np.clip(y_shifted, -ymax, ymax)
+        y_bot = np.clip(y_shifted - w, -ymax, ymax)
+
+        xx = np.concatenate([x, x[::-1]])
+        yy = np.concatenate([y_top, y_bot[::-1]])
+
+        # ---- генерация копий вдоль Y и зеркальные по X ----
+        y_offsets = np.arange(-N, N + 1) * w * 2
+        x_signs = [1, -1]
+
+        for x_sign in x_signs:
+            for y_off in y_offsets:
+                coords = np.vstack([xx * x_sign, yy + y_off]).T
+                poly = Polygon(coords)
+
+                if not poly.is_valid:
+                    poly = poly.buffer(0)
+                    poly = orient(poly)
+                    if not poly.is_valid:
+                        continue
+
+                if poly.area < 1e-6:
+                    continue
+
+                points = np.array(poly.exterior.coords)
+                cell.add(gdspy.Polygon(points, layer=1))
+
+    gdspy.write_gds(filename)
+    print(f"GDS saved: {filename}")
+
+def generate_lens_stl_grid(
+        a_params,      # (orders,)
+        h_params,      # (orders,)
+        orders: int,
+        rt_np,
+        stack: int,
+        substrate_thickness: float,  # H
+        LIMIT_SHAPE: float = 0.0,
+        filename: str = "diffraction_grating.stl",
+        Q: int = 200,
+        w: float = 0.1,
+) -> trimesh.Trimesh:
+    """
+    Forms a diffraction grating in the STL.
+    The intervals are set by rectangular blocks, the height is taken from h_params.
+    """
+
+    # --- входные данные в NumPy ---
+    a_np = np.asarray(a_params, dtype=float)
+    h_np = np.asarray(h_params, dtype=float)
+
+    # служебные массивы из внешней функции (предполагаем, что работают с numpy)
+    list_drt, list_crt = get_drt_midrt(rt_np, orders)
+    y0 = -0.0001 + 2 * stack * w
+
+    rects = []  # список прямоугольников (x_center_local, length_x, height, x0)
+
+    # --- цикл по порядкам ---
+    for m in range(orders):
+        a = np.clip(a_np[m], 1e-3, None)
+
+        if m == 0:
+            rt0 = 0.0
+        else:
+            rt0 = rt_np[m - 1] + 0.01
+        x0 = 0.0 if m == 0 else (rt_np[m] + rt0) / 2.0
+
+        x = np.linspace(rt0, rt_np[m] - 0.01, Q)
+        z = np.clip((x - x0) / a, -20.0, 20.0)
+        y_profile = a * np.cosh(z)
+
+        pure_x_list = []
+        for n in range(stack, -1, -1):
+            ip = int(np.argmin(y_profile))
+            y_shifted = y_profile - y_profile[ip]
+            ymax = 0.5 * (x.max() - x.min())
+            y_top = np.clip(y_shifted, -ymax, ymax)
+            y_bot = np.clip(y_shifted - w, -ymax, ymax)
+
+            xx = np.concatenate([x, x[::-1]])
+            yy = np.concatenate([y_top, y_bot[::-1]]) + 2.0 * n * w
+
+            x_int = cut_y(xx, yy, y0)
+            pure_x_list.append(x_int)
+
+        # нормировка точек
+        filtered = []
+        for arr in pure_x_list:
+            if arr is None or arr.size == 0:
+                continue
+            L = arr.size
+            if L == 1:
+                arr = np.array([-arr[0], arr[0]], dtype=float)
+            elif L == 2 and m == 0:
+                v0, v1 = float(arr[0]), float(arr[1])
+                arr = np.array([-v1, -v0, v0, v1], dtype=float)
+            elif L in (2, 4):
+                arr = arr - list_crt[m]
+            else:
+                continue
+            filtered.append(arr)
+
+        # превращаем интервалы в прямоугольники
+        for arr in filtered:
+            if arr.size == 2:
+                intervals = [(float(arr[0]), float(arr[1]))]
+            elif arr.size == 3:
+                intervals = [(float(arr[0]), float(arr[1])),
+                             (-float(arr[1]), -float(arr[0]))]
+            else:
+                intervals = [(float(arr[0]), float(arr[1])),
+                             (float(arr[2]), float(arr[3]))]
+
+            for (l, r) in intervals:
+                length_x = float(r) - float(l)
+                if length_x <= LIMIT_SHAPE:
+                    continue
+                x_center_local = (float(r) + float(l)) / 2.0
+                rects.append((x_center_local, length_x, float(h_np[m]), x0))
+
+    # --- строим геометрию ---
+    meshes = []
+
+    W = 20.0
+    L = float(rt_np[-1]) * 2.0
+    H = float(substrate_thickness)
+
+    substrate = trimesh.creation.box(extents=(L, W, H))
+    substrate.apply_translation((0.0, 0.0, H / 2.0))
+    meshes.append(substrate)
+
+    for x_center_local, length_x, height, x0 in rects:
+        x_center_global = x_center_local + x0
+        box = trimesh.creation.box(extents=(length_x, W, height))
+        box.apply_translation((x_center_global, 0.0, H + height / 2.0))
+        meshes.append(box)
+
+        # зеркальная копия
+        mirror_box = box.copy()
+        mirror_box.apply_transform(np.diag([-1, 1, 1, 1]))
+        meshes.append(mirror_box)
+
+    if meshes:
+        combined = trimesh.util.concatenate(meshes)
+        combined.export(filename)
         print(f"STL сохранён: {filename}")
     else:
-        print("⚠ Нет геометрии для экспорта в STL")
+        print("Нет геометрии для экспорта в STL")
 
+def generate_lens_gds_grid(
+    a_params,             # (orders,)
+    orders: int,
+    rt_np,
+    stack: int,
+    LIMIT_SHAPE: float = 0.0,
+    filename: str = "diffraction_grating.gds",
+    Q: int = 200,
+    w: float = 0.1,
+    W: float = None,
+) -> None:
+    """
+    Формирует дифракционную решётку в GDS-формате.
+    Интервалы задают прямоугольные блоки без учёта высоты.
+    Подложка не используется. Все размерности — в микронах.
+
+    Параметры:
+    ----------
+    a_params : array-like
+        Параметры профиля (по числу сегментов).
+    orders : int
+        Количество сегментов.
+    rt_np : array-like
+        Радиусы границ сегментов.
+    stack : int
+        Количество уровней укладки (по оси Y, в единицах шагов w).
+    LIMIT_SHAPE : float
+        Минимальная допустимая длина прямоугольника по X.
+    filename : str
+        Имя выходного файла GDS.
+    Q : int
+        Количество точек для аппроксимации профиля.
+    w : float
+        Толщина одной линии в микронах.
+    W : float | None
+        Общая половинная ширина структуры вдоль оси Y. Если None — берётся из rt_np[-1].
+    """
+    # --- подготовка данных ---
+    a_np = np.asarray(a_params, dtype=float)
+    rt_np = np.asarray(rt_np, dtype=float)
+
+    if W is None:
+        W = float(rt_np[-1])
+
+    # служебные массивы — их нужно получить из внешних функций
+    list_drt, list_crt = get_drt_midrt(rt_np, orders)
+
+    y0 = -0.0001 + 2 * stack * w
+    rects = []  # (x_center_local, length_x, x0)
+
+    # --- цикл по порядкам ---
+    for m in range(orders):
+        a = np.clip(a_np[m], 1e-3, None)
+        rt0 = 0.0 if m == 0 else rt_np[m - 1] + 0.01
+        x0 = 0.0 if m == 0 else (rt_np[m] + rt0) / 2.0
+
+        x = np.linspace(rt0, rt_np[m] - 0.01, Q)
+        z = np.clip((x - x0) / a, -20.0, 20.0)
+        y_profile = a * np.cosh(z)
+
+        pure_x_list = []
+        for n in range(stack, -1, -1):
+            ip = int(np.argmin(y_profile))
+            y_shifted = y_profile - y_profile[ip]
+            ymax = 0.5 * (x.max() - x.min())
+            y_top = np.clip(y_shifted, -ymax, ymax)
+            y_bot = np.clip(y_shifted - w, -ymax, ymax)
+            xx = np.concatenate([x, x[::-1]])
+            yy = np.concatenate([y_top, y_bot[::-1]]) + 2.0 * n * w
+
+            x_int = cut_y(xx, yy, y0)
+            pure_x_list.append(x_int)
+
+        # фильтрация и формирование интервалов
+        filtered = []
+        for arr in pure_x_list:
+            if arr is None or arr.size == 0:
+                continue
+            L = arr.size
+            if L == 1:
+                arr = np.array([-arr[0], arr[0]], dtype=float)
+            elif L == 2 and m == 0:
+                v0, v1 = float(arr[0]), float(arr[1])
+                arr = np.array([-v1, -v0, v0, v1], dtype=float)
+            elif L in (2, 4):
+                arr = arr - list_crt[m]
+            else:
+                continue
+            filtered.append(arr)
+
+        # превращаем интервалы в прямоугольники
+        for arr in filtered:
+            if arr.size == 2:
+                intervals = [(float(arr[0]), float(arr[1]))]
+            elif arr.size == 3:
+                intervals = [(float(arr[0]), float(arr[1])),
+                             (-float(arr[1]), -float(arr[0]))]
+            else:
+                intervals = [(float(arr[0]), float(arr[1])),
+                             (float(arr[2]), float(arr[3]))]
+
+            for (l, r) in intervals:
+                length_x = float(r) - float(l)
+                if length_x <= LIMIT_SHAPE:
+                    continue
+                x_center_local = (float(r) + float(l)) / 2.0
+                rects.append((x_center_local, length_x, x0))
+
+    # --- построение геометрии GDS ---
+    cell = gdspy.Cell("DIFF_GRATING")
+
+    for x_center_local, length_x, x0 in rects:
+        x_center_global = x_center_local + x0
+        y0 = -W
+        y1 = W
+        x_left = x_center_global - length_x / 2.0
+        x_right = x_center_global + length_x / 2.0
+
+        # основной прямоугольник
+        rect_coords = [
+            (x_left, y0),
+            (x_right, y0),
+            (x_right, y1),
+            (x_left, y1)
+        ]
+        cell.add(gdspy.Polygon(rect_coords, layer=1))
+
+        # зеркальная копия по X
+        rect_coords_mirror = [
+            (-x_left, y0),
+            (-x_right, y0),
+            (-x_right, y1),
+            (-x_left, y1)
+        ]
+        cell.add(gdspy.Polygon(rect_coords_mirror, layer=1))
+
+    gdspy.write_gds(filename)
+    print(f"GDS сохранён: {filename}")
+
+def generate_lens_stl_cells(
+        a_params,
+        h_params,
+        orders: int,
+        rt_np,
+        stack: int,
+        substrate_thickness: float,
+        LIMIT_SHAPE: float = 0.0,
+        filename: str = "diffraction_grating_cells.stl",
+        Q: int = 200,
+        w: float = 0.1,
+        cell_shape: str = "box",  # "box" или "cylinder"
+) -> trimesh.Trimesh:
+    """
+    Формирует решетку ячеек в STL-формате.
+    Можно выбрать форму ячейки: "box" (квадрат) или "cylinder".
+    Размер ячейки берется из length_x.
+    """
+
+    a_np = np.asarray(a_params, dtype=float)
+    h_np = np.asarray(h_params, dtype=float)
+
+    list_drt, list_crt = get_drt_midrt(rt_np, orders)
+    y0 = -0.0001 + 2 * stack * w
+
+    rects = []  # (x_center_global, length_x, height)
+
+    for m in range(orders):
+        a = np.clip(a_np[m], 1e-3, None)
+
+        if m == 0:
+            rt0 = 0.0
+        else:
+            rt0 = rt_np[m - 1] + 0.01
+        x0 = 0.0 if m == 0 else (rt_np[m] + rt0) / 2.0
+
+        x = np.linspace(rt0, rt_np[m] - 0.01, Q)
+        z = np.clip((x - x0) / a, -20.0, 20.0)
+        y_profile = a * np.cosh(z)
+
+        pure_x_list = []
+        for n in range(stack, -1, -1):
+            ip = int(np.argmin(y_profile))
+            y_shifted = y_profile - y_profile[ip]
+            ymax = 0.5 * (x.max() - x.min())
+            y_top = np.clip(y_shifted, -ymax, ymax)
+            y_bot = np.clip(y_shifted - w, -ymax, ymax)
+
+            xx = np.concatenate([x, x[::-1]])
+            yy = np.concatenate([y_top, y_bot[::-1]]) + 2.0 * n * w
+
+            x_int = cut_y(xx, yy, y0)
+            pure_x_list.append(x_int)
+
+        filtered = []
+        for arr in pure_x_list:
+            if arr is None or arr.size == 0:
+                continue
+            L = arr.size
+            if L == 1:
+                arr = np.array([-arr[0], arr[0]], dtype=float)
+            elif L == 2 and m == 0:
+                v0, v1 = float(arr[0]), float(arr[1])
+                arr = np.array([-v1, -v0, v0, v1], dtype=float)
+            elif L in (2, 4):
+                arr = arr - list_crt[m]
+            else:
+                continue
+            filtered.append(arr)
+
+        for arr in filtered:
+            if arr.size == 2:
+                intervals = [(float(arr[0]), float(arr[1]))]
+            elif arr.size == 3:
+                intervals = [(float(arr[0]), float(arr[1])),
+                             (-float(arr[1]), -float(arr[0]))]
+            else:
+                intervals = [(float(arr[0]), float(arr[1])),
+                             (float(arr[2]), float(arr[3]))]
+
+            for (l, r) in intervals:
+                length_x = float(r) - float(l)
+                if length_x <= LIMIT_SHAPE:
+                    continue
+
+                x_center_global = (float(r) + float(l)) / 2.0 + x0
+                rects.append((x_center_global, length_x, float(h_np[m])))
+
+    # --- строим геометрию ---
+    meshes = []
+
+    W = 20.0
+    L = float(rt_np[-1]) * 2.0
+    H = float(substrate_thickness)
+
+    substrate = trimesh.creation.box(extents=(L, W, H))
+    substrate.apply_translation((0.0, 0.0, H / 2.0))
+    meshes.append(substrate)
+
+    for x_center, length_x, height in rects:
+        ny = int(W // (6*length_x))
+        for iy in range(-ny, ny + 1):
+            y_center = iy * (2*length_x)
+
+            if cell_shape == "box":
+                # квадратная ячейка
+                cell = trimesh.creation.box(extents=(length_x, length_x, height))
+            elif cell_shape == "cylinder":
+                # цилиндр радиус = length_x/2, высота = height
+                cell = trimesh.creation.cylinder(
+                    radius=length_x / 2.0,
+                    height=height,
+                    sections=32  # гладкость цилиндра
+                )
+            else:
+                raise ValueError("cell_shape должен быть 'box' или 'cylinder'")
+
+            # смещаем ячейку
+            cell.apply_translation((x_center, y_center, H + height / 2.0))
+            meshes.append(cell)
+
+            # зеркальная копия по X
+            mirror_cell = cell.copy()
+            mirror_cell.apply_transform(np.diag([-1, 1, 1, 1]))
+            meshes.append(mirror_cell)
+
+    if meshes:
+        combined = trimesh.util.concatenate(meshes)
+        combined.export(filename)
+        print(f"STL сохранён: {filename} (ячейки: {cell_shape})")
+        return combined
+    else:
+        print("Нет геометрии для экспорта в STL")
+        return None
 
 def airy_characteristics():
     """
-    Вычисляет характерные размеры для идеального фокусного пятна (Airy disk).
-
-    :param NA: числовая апертура
-    :param wavelength: длина волны (в тех же единицах, например, мкм)
-    :return: dict с FWHM, FWTM, диаметром первого минимума
+    Calculates the characteristic dimensions for an ideal focal spot (Airy disk).
+    :return: dict with FWHM, FWTM, diameter of the first minimum
     """
     fwhm = 0.514 * conf.inc_wavelength / conf.numerical_aperture
     fwtm = 0.885 * conf.inc_wavelength / conf.numerical_aperture

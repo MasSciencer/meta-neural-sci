@@ -47,47 +47,6 @@ def find_D_pinhole(
 
     return d_pinhole
 
-def calculate_order(aperture: float, wavelength: float, focal_length: float) -> int:
-    """Вычисляет максимальное число полных фазовых циклов в апертурной линзе.
-
-    Параметры:
-    ----------
-    aperture : float
-        Диаметр линзы в метрах. Должен быть положительным числом.
-    wavelength : float
-        Средняя длина волны излучения в метрах. Должна быть положительной.
-    focal_length : float
-        Фокусное расстояние линзы в метрах. Должно быть положительным.
-
-    Возвращает:
-    -----------
-    int
-        Максимальное количество полных фазовых циклов вдоль радиуса линзы,
-        округленное до ближайшего меньшего целого числа.
-
-    """
-    # Валидация входных параметров
-    if any(param <= 0 for param in (aperture, wavelength, focal_length)):
-        raise ValueError("Все параметры должны быть положительными числами")
-
-    # Приводим к СИ
-    wavelength = wavelength * 1e-6
-    aperture = aperture * 1e-6
-    focal_length = focal_length * 1e-6
-
-    # Конфигурация расчетной сетки
-    num_points = 1000
-    radial_distances = np.linspace(0, aperture / 2, num_points)
-
-    # Расчет набега фазы вдоль радиального направления
-    phase_along_radius = (2 * np.pi / wavelength) * (np.sqrt(radial_distances ** 2 + focal_length ** 2) - focal_length)
-
-    # Определение количества полных фазовых циклов
-    full_cycles = np.floor(phase_along_radius / (2 * np.pi))
-
-    # Вычисление максимального количества циклов на краю апертуры
-    return int(full_cycles[-1])
-
 def save_params(
     params: Union[torch.Tensor, Sequence[torch.Tensor]],
     name: str,
@@ -167,3 +126,49 @@ def save_history(loc_history=None, save=True, index=None):
             loc_history = pickle.load(f)
         print(f"[INFO] История загружена из {filename}")
         return loc_history
+
+def recenter_and_crop(whole_int: np.ndarray, abscissa: np.ndarray, ref_index: int):
+    """
+    Центрирует и симметрично обрезает IOptimized так, чтобы максимум выбранной длины волны оказался в центре.
+    Возвращает обрезанный массив и соответствующий ему вектор abscissa.
+
+    Parameters
+    ----------
+    IOptimized : np.ndarray
+        Массив размером (n, m), где n - количество точек, m - количество длин волн.
+    abscissa : np.ndarray
+        Вектор длиной n, абсолютные координаты точек (например, в мкм).
+    ref_index : int
+        Индекс длины волны, используемой как эталон для центровки (столбец).
+
+    Returns
+    -------
+    (np.ndarray, np.ndarray)
+        - Новый массив (n', m), обрезанный и центрированный.
+        - Новый вектор abscissa длиной n'.
+    """
+    n, m = whole_int.shape
+    center = n // 2
+
+    # индекс максимума у эталонной длины волны
+    ref_max_idx = np.argmax(whole_int[:, ref_index])
+
+    # величина сдвига
+    shift = center - ref_max_idx
+
+    # сдвигаем данные
+    shifted = np.roll(whole_int, shift, axis=0)
+    abscissa_shifted = np.roll(abscissa, shift)
+
+    # считаем, сколько точек нужно обрезать с каждой стороны
+    cut = abs(shift)
+    if cut > 0:
+        shifted = shifted[cut:-cut, :]
+        abscissa_shifted = abscissa_shifted[cut:-cut]
+        print(f"[INFO] Центровка: максимум был на {ref_max_idx}, сдвиг = {shift}. "
+              f"Обрезано {cut} точек с каждой стороны. Итоговая длина = {len(abscissa_shifted)}")
+    else:
+        print(f"[INFO] Центровка: максимум уже в центре ({ref_max_idx}). Обрезка не требуется.")
+
+    return shifted, abscissa_shifted
+
