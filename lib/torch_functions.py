@@ -79,7 +79,7 @@ def calculate_radii_step(D, orders):
     return radii
 
 
-def get_drt_midrt(rt, orders):
+def get_midrt(rt, orders):
     """
     Calculate drt and midrt tensors from rt tensor.
 
@@ -90,20 +90,14 @@ def get_drt_midrt(rt, orders):
     Returns:
         tuple of (drt, midrt) torch.Tensors
     """
-    # Initialize tensors with zeros of the same dtype and device as rt
-    drt = torch.zeros(orders, dtype=rt.dtype, device=rt.device)
     midrt = torch.zeros(orders, dtype=rt.dtype, device=rt.device)
-
-    # First element special cases
-    drt[0] = 2 * rt[0]
     midrt[0] = 0
 
     # Remaining elements
     if orders > 1:
-        drt[1:] = rt[1:orders] - rt[:orders - 1]
         midrt[1:] = (rt[1:orders] + rt[:orders - 1]) / 2
 
-    return drt, midrt
+    return midrt
 
 
 def cut_y(xx, yy, y0):
@@ -147,7 +141,7 @@ def cut_y(xx, yy, y0):
 def setup_visualization():
     """Initializing a plot for visualization"""
     global fig, ax
-    fig, ax = plt.subplots(figsize=(10, 10))
+    fig, ax = plt.subplots(figsize=(50, 10))
     # Defining the color palette
     global colors
     colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
@@ -172,160 +166,14 @@ def plot_curve(x, y, X_sections, y0, n):
     # Выделяем точки пересечения красным
     ax.scatter(X_sections, np.full_like(X_sections, y0), color='red', s=10, zorder=3)
 
-def material_grid_weight_2d_rotate(
-        a_params: torch.Tensor,     # shape = (orders,)
-        h_params: torch.Tensor,     # shape = (orders,) - absolute material height in micrometers
-        height_limit: int,          # list of upper height limits (micrometers) per order
-        orders: int,
-        stack: int,
-        rt: torch.Tensor,
-        resolutions: list,          # list of tuples (N_x, N_y) per order
-        Q: int = 200,
-        w: float = 0.1,
-        smooth: bool = True,
-        beta: float = 1.0,
-        LIMIT_SHAPE: float = 0.2,
-        device: torch.device = None,
-        plot: bool = True,
-) -> list:
-    """
-    Returns a list of tensors of weights shape =(orders, N_x, N_y).
-    For x, weights_x weights are applied (smoothed or not).
-    By height (y), the material exists where y_pixel <= h_params[m],
-    otherwise, 0; mask_h is differentiated in height from 0 to height_limits[m] by N_y.
-    """
-    if device is None:
-        device = a_params.device
-
-    list_drt, list_crt = get_drt_midrt(rt, orders)
-    y0 = -0.0001 + 2 * stack * w
-    if plot:
-        setup_visualization()
-        ax.axhline(y=y0, color='black', linestyle='--', linewidth=1)
-
-    result_weights = []
-    for m in range(orders):
-        a = torch.clamp(a_params[m], min=1e-3)
-        h = torch.clamp(h_params[m], min=1e-3)
-        N_x, N_y = resolutions[m]
-
-        rt0 = torch.zeros((), device=device) if m == 0 else rt[m-1] + 0.01
-        x0 = torch.zeros((), device=device) if m == 0 else (rt[m] + rt0) / 2
-
-        x = torch.linspace(rt0, rt[m] - 0.01, Q, device=device)
-
-        # профиль по x
-        z = torch.clamp((x - x0) / a, min=-20, max=20)
-        y_profile = a * torch.cosh(z)
-
-        # сбор пересечений
-        pure_x_list = []
-
-        r = x0.abs().clamp(min=1e-6)  # чтобы не делить на ноль
-        w_rad = (w / r).to(device)  # w и R должны быть в одних единицах
-
-        for n in range(stack, -1, -1):
-            theta = torch.tensor(n * w_rad, device=device)
-            cos_t = torch.cos(theta)
-            sin_t = torch.sin(theta)
-            ip = torch.argmin(y_profile)
-            y_shifted = y_profile - y_profile[ip]
-            ymax = 0.1 * (x.max() - x.min())
-            y_top = torch.clamp(y_shifted, -ymax, ymax)
-            y_bot = torch.clamp(y_shifted - w, -ymax, ymax)
-
-            xx = torch.cat([x, x.flip(0)], dim=0)
-            yy = torch.cat([y_top, y_bot.flip(0)], dim=0) + 2 * n * w
-
-            xx_local = xx - x0
-
-            x_rot = xx_local * cos_t - yy * sin_t + x0 * cos_t
-            y_rot = xx_local * sin_t + yy * cos_t + x0 * sin_t
-
-            x_int = cut_y(x_rot, y_rot, y0)
-
-            pure_x_list.append(x_int)
-
-            if plot:
-                plot_curve(x_rot, y_rot, x_int, y0, n)
-
-        # нормировка
-        filtered = []
-        for arr in pure_x_list:
-            L = arr.numel()
-            if L == 0:
-                continue
-            if L == 1:
-                arr = torch.stack([-arr[0], arr[0]])
-            elif L == 2 and m == 0:
-                v0, v1 = arr
-                arr = torch.stack([-v1, -v0, v0, v1])
-            elif L in (2,3,4):
-                arr = arr - list_crt[m]
-            else:
-                continue
-            filtered.append(arr)
-
-        result_h = torch.zeros(N_y, device=device, dtype=h_params.dtype)
-        result_x = torch.zeros(N_x, device=device, dtype=h_params.dtype)
-        result_2d = torch.zeros((N_y, N_x), device=device, dtype=a_params.dtype)
-        # глобальные координаты
-        global_x = torch.linspace(-0.5 * list_drt[m], 0.5 * list_drt[m], N_x, device=device)
-        # высота ячейки: центры от 0 до h_limit
-        global_h = torch.linspace(0, height_limit, N_y, device=device)
-
-        for arr in filtered:
-            if arr.numel() == 2:
-                intervals = [(arr[0], arr[1])]
-            elif arr.numel() == 3:
-                intervals = [(arr[0], arr[1]), (-arr[1], -arr[0])]
-            else:
-                intervals = [(arr[0], arr[1]), (arr[2], arr[3])]
-
-            for start, end in intervals:
-                if (end - start).abs() < LIMIT_SHAPE:
-                    continue
-                # веса по x
-                if smooth:
-                    # x
-                    dist_x = torch.clamp(start - global_x, min=0) + torch.clamp(global_x - end, min=0)
-                    arg_x = torch.clamp(beta * dist_x, max=400)
-                    mask_x = torch.sigmoid(-arg_x) * 2
-                    result_x = torch.max(result_x, mask_x)
-
-                    # y
-                    dist_h = torch.clamp(global_h - h, min=0.0)
-                    # масштабируем через beta и не даём переполниться экспоненте
-                    arg_h = torch.clamp(beta*3 * dist_h, max=400)
-                    # sigmoid превращает «мягкий» прямоугольник в [0,1]
-                    # когда global_y << h, arg_h≈0 ⇒ sigmoid(0)=0.5 ⇒ mask_h_soft≈0.5
-                    mask_h_soft = torch.sigmoid(-arg_h)
-                    mask_h = mask_h_soft * 2 # чтобы получить plateau=1 внутри и плавный спуск к 0
-                    result_h = torch.clamp(mask_h, max=1.0)
-                else:
-                    mask_x = ((global_x >= start) & (global_x <= end))
-                    result_x[mask_x] = 1.0
-                    mask_h = global_h <= h
-                    result_h[mask_h] = 1.0
-
-                # комбинируем x с маской h
-
-                result_2d = torch.max(
-                    result_2d,
-                    result_h.unsqueeze(1)* result_x.unsqueeze(0)
-                )
-
-        result_weights.append(result_2d)
-    return result_weights  # list of tensors shape=(N_x, N_y) per order
-
 def material_grid_weight_1d(
-        a_params: torch.Tensor,   # shape = (orders,)
-        h_params: torch.Tensor,   # shape = (orders,) - absolute material height in micrometers
-        height_limit: int,      # list of upper height limits (micrometers) per order
-        orders: int,
+        a_params: torch.Tensor,  # shape = (orders,)
+        h_params: torch.Tensor,  # shape = (orders,) - absolute material height in micrometers
+        height_limit: int,  # list of upper height limits (micrometers) per order
         stack: int,
-        rt: torch.Tensor,
-        resolutions: list,        # list of tuples (N_x, N_y) per order
+        rt_tf: torch.Tensor,
+        drt_tf: torch.Tensor,
+        resolutions: list,  # list of tuples (N_x, N_y) per order
         Q: int = 200,
         w: float = 0.1,
         smooth: bool = True,
@@ -340,23 +188,23 @@ def material_grid_weight_1d(
     if device is None:
         device = a_params.device
 
-    list_drt, list_crt = get_drt_midrt(rt, orders)
+    midrt_tf = get_midrt(rt_tf, len(a_params))
     y0 = -0.0001 + 2 * stack * w
     if plot:
         setup_visualization()
         ax.axhline(y=y0, color='black', linestyle='--', linewidth=1)
 
     result_weights = []
-    for m in range(orders):
+    for m in range(len(a_params)):
         # параметры
         a = torch.clamp(a_params[m], min=1e-3)
         h = torch.clamp(h_params[m], min=1e-3)
         N_x, N_y = resolutions[m]
 
-        # сетки
-        rt0 = torch.zeros((), device=device) if m == 0 else rt[m-1] + 0.01
-        x0 = torch.zeros((), device=device) if m == 0 else (rt[m] + rt0) / 2
-        x = torch.linspace(rt0, rt[m] - 0.01, Q, device=device)
+        # meshes
+        rt0 = torch.zeros((), device=device) if m == 0 else rt_tf[m-1]
+        x0 = torch.zeros((), device=device) if m == 0 else (rt_tf[m] + rt0) / 2
+        x = torch.linspace(rt0, rt_tf[m], Q, device=device)
 
         # профиль по x
         z = torch.clamp((x - x0) / a, min=-20, max=20)
@@ -390,7 +238,7 @@ def material_grid_weight_1d(
                 v0, v1 = arr
                 arr = torch.stack([-v1, -v0, v0, v1])
             elif L in (2,4):
-                arr = arr - list_crt[m]
+                arr = arr - midrt_tf[m]
             else:
                 continue
             filtered.append(arr)
@@ -399,7 +247,7 @@ def material_grid_weight_1d(
         result_x = torch.zeros(N_x, device=device, dtype=h_params.dtype)
         result_2d = torch.zeros((N_y, N_x), device=device, dtype=a_params.dtype)
         # global coordinates
-        global_x = torch.linspace(-0.5 * list_drt[m], 0.5 * list_drt[m], N_x, device=device)
+        global_x = torch.linspace(-0.5 * drt_tf[m], 0.5 * drt_tf[m], N_x, device=device)
         # cell height: centers from 0 to h_limit
         global_h = torch.linspace(0, height_limit, N_y, device=device)
 
@@ -447,12 +295,13 @@ def material_grid_weight_2d(
         a_params: torch.Tensor,     # shape = (orders,)
         h_params: torch.Tensor,     # shape = (orders,) - absolute material height in micrometers
         height_limit: int,          # list of upper height limits (micrometers) per order
-        orders: int,
         stack: int,
-        rt: torch.Tensor,
+        rt_tf: torch.Tensor,
+        drt_tf: torch.Tensor,
         resolutions: list,          # list of tuples (N_x, N_y) per order
         Q: int = 200,
         w: float = 0.1,
+        cut_shift: float = 0.0,
         smooth: bool = True,
         beta: float = 1.0,
         LIMIT_SHAPE: float = 0.2,
@@ -464,27 +313,29 @@ def material_grid_weight_2d(
     For x, weights_x weights are applied (smoothed or not).
     By height (y), the material exists where y_pixel <= h_params[m],
     otherwise, 0; mask_h is differentiated in height from 0 to height_limits[m] by N_y.
+
+    :param cut_shift [-1:1] adjust shift cross-section line
+
     """
     if device is None:
         device = a_params.device
 
-    list_drt, list_crt = get_drt_midrt(rt, orders)
-    y0 = -0.0001 + 2 * stack * w
+    midrt_tf = get_midrt(rt_tf, len(a_params))
+    y0 = -0.0001 + 2 * stack * w + cut_shift * w
     if plot:
         setup_visualization()
         ax.axhline(y=y0, color='black', linestyle='--', linewidth=1)
-
     result_weights = []
-    for m in range(orders):
+    for m in range(len(a_params)):
         # key params
-        a = torch.clamp(a_params[m], min=1e-3)
-        h = torch.clamp(h_params[m], min=1e-3)
+        a = a_params[m]
+        h = h_params[m]
         N_x, N_y = resolutions[m]
 
         # meshes
-        rt0 = torch.zeros((), device=device) if m == 0 else rt[m-1] + 0.01
-        x0 = torch.zeros((), device=device) if m == 0 else (rt[m] + rt0) / 2
-        x = torch.linspace(rt0, rt[m] - 0.01, Q, device=device)
+        rt0 = torch.zeros((), device=device) if m == 0 else rt_tf[m-1]
+        x0 = torch.zeros((), device=device) if m == 0 else (rt_tf[m] + rt0) / 2
+        x = torch.linspace(rt0, rt_tf[m], Q, device=device)
 
         # x profile
         z = torch.clamp((x - x0) / a, min=-20, max=20)
@@ -518,7 +369,7 @@ def material_grid_weight_2d(
                 v0, v1 = arr
                 arr = torch.stack([-v1, -v0, v0, v1])
             elif L in (2,4):
-                arr = arr - list_crt[m]
+                arr = arr - midrt_tf[m]
             else:
                 continue
             filtered.append(arr)
@@ -527,7 +378,7 @@ def material_grid_weight_2d(
         result_x = torch.zeros(N_x, device=device, dtype=h_params.dtype)
         result_2d = torch.zeros((N_y, N_x), device=device, dtype=a_params.dtype)
         # global coordinates
-        global_x = torch.linspace(-0.5 * list_drt[m], 0.5 * list_drt[m], N_x, device=device)
+        global_x = torch.linspace(-0.5 * drt_tf[m], 0.5 * drt_tf[m], N_x, device=device)
         # cell height: centers from 0 to h_limit
         global_h = torch.linspace(0, height_limit, N_y, device=device)
 
@@ -576,6 +427,179 @@ def material_grid_weight_2d(
                 )
         result_weights.append(result_2d)
     return result_weights  # list of tensors shape=(N_x, N_y) per order
+
+# def material_grid_weight_2d_rotate(
+#         a_params: torch.Tensor,     # shape = (orders,)
+#         h_params: torch.Tensor,     # shape = (orders,) - absolute material height in micrometers
+#         height_limit: int,          # list of upper height limits (micrometers) per order
+#         stack: int,
+#         rt: torch.Tensor,
+#         resolutions: list,          # list of tuples (N_x, N_y) per order
+#         Q: int = 200,
+#         w: float = 0.1,
+#         cut_shift: float = 0.0,
+#         smooth: bool = True,
+#         beta: float = 1.0,
+#         LIMIT_SHAPE: float = 0.2,
+#         device: torch.device = None,
+#         plot: bool = True,
+# ) -> list:
+#     """
+#     Returns a list of tensors of weights shape =(orders, N_x, N_y).
+#     For x, weights_x weights are applied (smoothed or not).
+#     By height (y), the material exists where y_pixel <= h_params[m],
+#     otherwise, 0; mask_h is differentiated in height from 0 to height_limits[m] by N_y.
+#
+#     :param cut_shift [-1:1] adjust shift cross-section line
+#
+#     """
+#     if device is None:
+#         device = a_params.device
+#
+#     list_drt, list_crt = get_drt_midrt(rt, len(a_params))
+#     y0 = -0.01 + 2 * stack * w + w * cut_shift
+#     if plot:
+#         setup_visualization()
+#         ax.axhline(y=y0, color='black', linestyle='--', linewidth=1)
+#     result_weights = []
+#     for m in range(len(a_params)):
+#         # key params
+#         a = a_params[m]
+#         h = h_params[m]
+#         N_x, N_y = resolutions[m]
+#
+#         # meshes
+#         rt0 = torch.zeros((), device=device) if m == 0 else rt[m-1] + 0.01
+#         x0 = torch.zeros((), device=device) if m == 0 else (rt[m] + rt0) / 2
+#         x = torch.linspace(rt0, rt[m], Q, device=device)
+#
+#         # x profile
+#         z = torch.clamp((x - x0) / a, min=-20, max=20)
+#         y_profile = a * torch.cosh(z)
+#
+#         # collecting intersections
+#         pure_x_list = []
+#         for n in range(stack, -1, -1):
+#
+#             # ----- базовые кривые -----
+#             ip = torch.argmin(y_profile)
+#             y_shifted = y_profile - y_profile[ip]
+#             ymax = 0.5 * (x.max() - x.min())
+#             y_top = torch.clamp(y_shifted, -ymax, ymax)
+#             y_bot = torch.clamp(y_shifted - w, -ymax, ymax)
+#
+#             xx = torch.cat([x, x.flip(0)], dim=0)
+#             yy = torch.cat([y_top, y_bot.flip(0)], dim=0)
+#
+#             # =========================================================
+#             #     1. ЛИНЕЙНЫЙ СДВИГ
+#             # =========================================================
+#             dy = n * w
+#             xx_shift = xx
+#             yy_shift = yy + dy
+#
+#             # =========================================================
+#             #     2. УГЛОВОЕ СМЕЩЕНИЕ ДЛЯ (n > 0)
+#             # =========================================================
+#
+#             if m == 0:
+#                 # Полное отключение вращения для первого сектора
+#                 xx_rot = xx
+#                 yy_rot = yy + 2 * n * w
+#             else:
+#                 # абсолютный радиус центра сектора
+#                 r = list_crt[m]
+#
+#                 # базовое угловое смещение (скаляр)
+#                 base_theta = w / (r + 1e-9)
+#                 base_theta = torch.as_tensor(base_theta, device=device)
+#
+#                 # угол поворота зависит от номера линии n
+#                 theta = n * base_theta
+#
+#                 cos_t = torch.cos(theta)
+#                 sin_t = torch.sin(theta)
+#
+#                 # вращение вокруг глобального центра
+#                 xx_rot = xx_shift * cos_t - yy_shift * sin_t
+#                 yy_rot = xx_shift * sin_t + yy_shift * cos_t
+#
+#             x_int = cut_y(xx_rot, yy_rot, y0)
+#             pure_x_list.append(x_int)
+#
+#             if plot:
+#                 plot_curve(xx_rot, yy_rot, x_int, y0, n)
+#
+#         # normalization of points
+#         filtered = []
+#         for arr in pure_x_list:
+#             L = arr.numel()
+#             if L == 0:
+#                 continue
+#             if L == 1:
+#                 arr = torch.stack([-arr[0], arr[0]])
+#             elif L == 2 and m == 0:
+#                 v0, v1 = arr
+#                 arr = torch.stack([-v1, -v0, v0, v1])
+#             elif L in (2,4):
+#                 arr = arr - list_crt[m]
+#             else:
+#                 continue
+#             filtered.append(arr)
+#
+#         result_h = torch.zeros(N_y, device=device, dtype=h_params.dtype)
+#         result_x = torch.zeros(N_x, device=device, dtype=h_params.dtype)
+#         result_2d = torch.zeros((N_y, N_x), device=device, dtype=a_params.dtype)
+#         # global coordinates
+#         global_x = torch.linspace(-0.5 * list_drt[m], 0.5 * list_drt[m], N_x, device=device)
+#         # cell height: centers from 0 to h_limit
+#         global_h = torch.linspace(0, height_limit, N_y, device=device)
+#
+#         for arr in filtered:
+#             if arr.numel() == 2:
+#                 intervals = [(arr[0], arr[1])]
+#             elif arr.numel() == 3:
+#                 intervals = [(arr[0], arr[1]), (-arr[1], -arr[0])]
+#             else:
+#                 intervals = [(arr[0], arr[1]), (arr[2], arr[3])]
+#
+#             for start, end in intervals:
+#                 if (end - start).abs() < LIMIT_SHAPE:
+#                     continue
+#                 # weights on x
+#                 if smooth:
+#                     # x
+#                     dist_x = torch.clamp(start - global_x, min=0) + torch.clamp(global_x - end, min=0)
+#                     arg_x = torch.clamp(beta * dist_x, max=400)
+#                     mask_x = torch.sigmoid(-arg_x) * 2
+#                     result_x = torch.max(result_x, mask_x)
+#                     # y
+#                     dist_h = torch.clamp(global_h - h, min=0.0)
+#                     # we scale through beta and do not let the exponent overflow
+#                     arg_h = torch.clamp(beta*3 * dist_h, max=400)
+#                     # sigmoid turns a "soft" rectangle into [0,1]
+#                     # when global_y << h, arg_h≈0, sigmoid(0)=0.5, mask_h_soft≈0.5
+#                     # can be shifted by +0.5 if you need a single plateau (see below)
+#                     mask_h_soft = torch.sigmoid(-arg_h)
+#                     mask_h = mask_h_soft * 2 # to get plateau=1 inside and a smooth descent to 0
+#                     result_h = torch.clamp(mask_h, max=1.0)
+#                 else:
+#                     mask_x = ((global_x >= start) & (global_x <= end))
+#                     result_x[mask_x] = 1.0
+#                     mask_h = global_h <= h
+#                     result_h[mask_h] = 1.0
+#
+#                 # combining x with the mask h
+#                 # result = max(prev, mask_x[:,None] * mask_h[None,:])
+#                 # result_x.unsqueeze(0)  # (1, N_x)
+#                 # result_h.unsqueeze(1)  # (N_y, 1) This dimension should be the first one to be correctly correlated with the simulation.
+#
+#                 result_2d = torch.max(
+#                     result_2d,
+#                     result_h.unsqueeze(1)* result_x.unsqueeze(0)
+#                 )
+#         result_weights.append(result_2d)
+#     return result_weights  # list of tensors shape=(N_x, N_y) per order
 
 def auto_initial(
         orders: int,
@@ -631,3 +655,43 @@ def auto_initial(
         plt.show()
 
     return vals
+
+def get_effective_lr(optimizer: torch.optim.Optimizer, verbose: bool = False) -> float:
+    """
+    Возвращает среднюю эффективную скорость обучения (effective learning rate)
+    для Adam / AdamW оптимизатора.
+    При verbose=True выводит значения для всех параметров.
+
+    Формула:
+        effective_lr = lr / (sqrt(v_hat) + eps)
+    где v_hat — скорректированная экспоненциальная оценка дисперсии градиента.
+    """
+    eff_lrs = []
+
+    for group in optimizer.param_groups:
+        lr = group['lr']
+        beta2 = group['betas'][1]
+        eps = group['eps']
+
+        for p in group['params']:
+            if p.grad is None:
+                continue
+            state = optimizer.state.get(p, None)
+            if not state or 'exp_avg_sq' not in state:
+                continue
+
+            v = state['exp_avg_sq']
+            step_num = state['step']
+            if step_num == 0:
+                continue
+
+            bias_correction2 = 1 - beta2 ** step_num
+            denom = (v.sqrt() / (bias_correction2 ** 0.5)).add_(eps)
+
+            eff_lr = (lr / denom).mean().item()
+            eff_lrs.append(eff_lr)
+
+            if verbose:
+                print(f"  Param id={id(p)} | Effective LR = {eff_lr:.6e}")
+
+    return float(sum(eff_lrs) / len(eff_lrs)) if eff_lrs else 0.0

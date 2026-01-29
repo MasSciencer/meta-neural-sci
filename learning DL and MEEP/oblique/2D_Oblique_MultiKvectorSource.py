@@ -1,6 +1,6 @@
 import meep as mp
 import numpy as np
-import conf
+from configs import conf_ref
 import matplotlib.pyplot as plt
 from lib import my_sources
 from matplotlib import animation

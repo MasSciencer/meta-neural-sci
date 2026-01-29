@@ -5,9 +5,9 @@ import os
 from scipy.interpolate import interp1d
 from scipy.fft import fft
 from scipy.signal import savgol_filter
-from typing import Union, Sequence,List, Iterable, Tuple
+from typing import Union, Sequence,List, Iterable, Tuple, Optional
 import gdspy
-import conf
+from configs import conf_test as conf
 from lib import my_sources
 import trimesh
 from shapely.geometry import Polygon
@@ -109,7 +109,7 @@ def calculate_radii_step(D, orders):
         orders: Количество сегментов радиуса (int или скалярный tensor)
 
     Returns:
-        Тензор радиусов (float64), упорядоченный по возрастанию,
+        numpy радиусов (float64), упорядоченный по возрастанию,
         размерностью [orders], в диапазоне (0, D/2].
     """
     # orders нам нужен как целое число для arange
@@ -126,41 +126,47 @@ def calculate_radii_step(D, orders):
 
     return radii
 
-def get_drt_midrt(rt, orders, is_global = True):
+def get_loc_orders(diaphragm_orders, is_center):
     """
-    :param rt: радиусы порядков
+    :param diaphragm_orders:
+    :param is_center:
+    :return: loc_orders
+    """
+    if is_center:
+        loc_orders = diaphragm_orders / 2
+    else:
+        loc_orders = diaphragm_orders
+
+    return int(loc_orders)
+
+def get_drt_midrt(rt, orders, is_center=True):
+    """
+    :param rt: numpy array с радиусами
     :param orders: количество порядков
-    :return: (list) ширины между радиусами и глобальные центры между радиусами
+    :param is_center: режим вычисления
+    :return: drt (np.ndarray), midrt (np.ndarray)
     """
+
     drt = []
     midrt = []
 
-    if is_global:
-        print(f"len(rt) is {len(rt)}")
-        print(f"len(orders) is {orders}")
-        for order in range(orders):
-            drt.append(2 * rt[order] if order == 0 else (rt[order] - rt[order - 1]))
-            midrt.append(0 if order == 0 else (rt[order] + rt[order - 1]) / 2)
+    if is_center:
+        # order = 0
+        drt.append(2*rt[0])
+        midrt.append(0.0)
+
+        # order > 0
+        for order in range(1, orders):
+            drt.append(rt[order] - rt[order - 1])
+            midrt.append((rt[order] + rt[order - 1]) / 2)
 
     else:
-        for order in range(0, orders+1):
-            if order == 0:
-                drt.append(rt[order])
-                midrt.append(rt[order]/2 - rt[orders]/2)
-            else:
-                drt.append(rt[order] - rt[order - 1])
-                midrt.append((rt[order] + rt[order - 1]) / 2 - rt[orders]/2)
+        global_shift = rt[orders] / 2
+        for order in range(1, orders):
+            drt.append(rt[order] - rt[order - 1])
+            midrt.append((rt[order] + rt[order - 1]) / 2 - global_shift)
 
-        for order in range(0, orders):
-            if order == 0:
-                drt.append(rt[order])
-                midrt.append(rt[order]/2)
-
-            else:
-                drt.append(rt[order] - rt[order - 1])
-                midrt.append((rt[order] + rt[order - 1]) / 2)
-
-    return drt, midrt
+    return np.array(drt, dtype=np.float32), np.array(midrt, dtype=np.float32)
 
 """
 SIMULATION
@@ -243,10 +249,11 @@ def get_Ibase_batch_simulation(
         max_run_time: int = conf.maximum_run_time,
         symmetries=None,
         filename: str = None,
+        verbose = False,
 ):
     """
-    Wrapper: run multiple simulations with different source sets
-    and return concatenated IPlane_base results only.
+    Wrapper: run broadband simulation with different source angles
+    and return IPlane_base results.
 
     Parameters:
         monitor: single NearRegion monitor
@@ -257,11 +264,11 @@ def get_Ibase_batch_simulation(
         symmetries : optional symmetries for simulation
         filename : optional filename to save/load results
     Returns:
-        IPlane_base_all : concatenated simulation results
+        IPlane_base_all : simulation results for a set of angels
     """
 
     if filename is None:
-        filename = f"base_IPlane_D={conf.aperture}_f={conf.f}_diaph={conf.diaphragm}_res={conf.coef_resolution}.npy"
+        filename = f"basePlane_D{conf.aperture}_f{conf.f}_diaph{conf.diaphragm}_res{conf.coef_resolution}_nfreq{conf.inc_nfreq}.npy"
     else:
         if os.path.exists(filename):
             IPlane_base_all = np.load(filename)
@@ -274,8 +281,9 @@ def get_Ibase_batch_simulation(
     n_sources = len(sources_batch)
 
     for idx, sources in enumerate(sources_batch, start=1):
-        print(f"Running simulation {idx}/{n_sources}...")
-        IPlane_base, _ = get_Ibase_simulation(
+        if verbose:
+            print(f"Running batch: {idx}/{n_sources}...")
+        IBase_single_angle = get_Ibase_simulation(
             monitor=monitor,
             sources=sources,
             cell=cell,
@@ -283,20 +291,21 @@ def get_Ibase_batch_simulation(
             max_run_time=max_run_time,
             symmetries=symmetries,
         )
-        results.append(IPlane_base)
+        results.append(IBase_single_angle)
 
     # save
     np.save(filename, results)
     print(f"Simulation result saved to: {filename}")
+    return np.array(results)
 
-    return results
-def get_IAiry_norm_simulation(
+def get_IAiry_simulation(
         monitor,
         cell,
         resolution,
         frequents_array: list = conf.inc_frequents_array,
         max_run_time: int = conf.maximum_run_time,
         symmetries=None,
+        epsilon=None,
         filename_focus_airy: str = None,
         filename_base_airy: str = None,
         get_base: bool = False,
@@ -311,13 +320,13 @@ def get_IAiry_norm_simulation(
     :param filename: optional filename to save/load results
     :return: IAiry_norm array shape (ff_resolution, nfreq), last sim object
     """
-    if filename_focus_airy is None:
-        filename_focus_airy = f"focus_Airy_simulation_D={conf.aperture}_f={conf.f}_diaph={conf.diaphragm}_res={conf.coef_resolution}.npy"
-        filename_base_airy = f"base_Airy_simulation_D={conf.aperture}_f={conf.f}_diaph={conf.diaphragm}_res={conf.coef_resolution}.npy"
-    else:
-        IAiry_focus = None
-        IAiry_base = None
+    IAiry_focus = None
+    IAiry_base = None
 
+    if filename_focus_airy is None:
+        filename_focus_airy = f"focusAiry_D{conf.aperture}_f{conf.f}_diaph{conf.diaphragm}_res{conf.coef_resolution}_nfreq{conf.inc_nfreq}.npy"
+        filename_base_airy = f"baseAiry_D{conf.aperture}_f{conf.f}_diaph{conf.diaphragm}_res{conf.coef_resolution}_nfreq{conf.inc_nfreq}.npy"
+    else:
         if os.path.exists(filename_focus_airy):
             IAiry_focus = np.load(filename_focus_airy)
             print(f"Data from {filename_focus_airy} loaded successfully.")
@@ -331,52 +340,60 @@ def get_IAiry_norm_simulation(
 
         return IAiry_focus, IAiry_base, None
 
-        # Placeholder for normalized results
     base_results = []
     results = []
     sim = None
 
-    for idx, freq in enumerate(frequents_array):
+    for freq in frequents_array:
         if get_base:
-            if len(base_results) == 0:
-                src = my_sources.EigenmodeSource(
-                    frequency=freq,
-                    diaphragm=conf.diaphragm,
-                    center=mp.Vector3(0,0,0),
-                    resolution=resolution,
-                    angle_in_rad=0,
-                ).get_sources()
+        # if len(base_results) == 0:
 
-                sim = mp.Simulation(
-                    cell_size=cell,
-                    boundary_layers=[mp.PML(thickness=conf.pml, direction=mp.ALL, side=mp.ALL)],
-                    sources=[src],
-                    resolution=conf.min_resolution * conf.coef_resolution,
-                    symmetries=symmetries,
-                )
-                n2f = sim.add_near2far(freq, conf.inc_df, 1, monitor)
-                sim.run(until=max_run_time)
+            # plane wave
+            src = my_sources.EigenmodeSource(
+                frequency=freq,
+                diaphragm=conf.diaphragm,
+                center=mp.Vector3(0,0,0),
+                df=conf.inc_df,
+                resolution=resolution,
+                angle_in_rad=0,
+                epsilon=epsilon,
+                focus_point=None,
+            ).get_sources()
 
-                IAiry_base_single_wave = get_I(
-                    sim,
-                    [n2f],
-                    conf.ff_res,
-                    mp.Vector3(0, conf.spot_ff, 0),
-                    out_angle_in_deg=0,
-                    f=conf.f
-                )
-                base_results.append(IAiry_base_single_wave)
+            sim = mp.Simulation(
+                cell_size=cell,
+                boundary_layers=[mp.PML(thickness=conf.pml, direction=mp.X)],
+                sources=[src],
+                resolution=conf.min_resolution * conf.coef_resolution,
+                symmetries=symmetries,
+            )
+            n2f = sim.add_near2far(freq, conf.inc_df, 1, monitor)
+            sim.run(until=max_run_time)
 
-        src = my_sources.FocusedEigenmodeSource(
+            IAiry_base_single_wave = get_I(
+                sim,
+                [n2f],
+                conf.ff_res,
+                mp.Vector3(0, conf.spot_ff, 0),
+                f=conf.f
+            )
+            base_results.append(IAiry_base_single_wave)
+
+        # focused wave
+        src = my_sources.EigenmodeSource(
             frequency=freq,
             diaphragm=conf.diaphragm,
-            center=mp.Vector3(0,0,0),
-            focus_point=mp.Vector3(x=conf.f, y=0)
+            center=mp.Vector3(0, 0, 0),
+            df=conf.inc_df,
+            resolution=resolution,
+            angle_in_rad=0,
+            epsilon=epsilon,
+            focus_point=mp.Vector3(x=conf.f),
         ).get_sources()
 
         sim = mp.Simulation(
             cell_size=cell,
-            boundary_layers=[mp.PML(thickness=conf.pml, direction=mp.ALL, side=mp.ALL)],
+            boundary_layers=[mp.PML(thickness=conf.pml, direction=mp.X)],
             sources=[src],
             resolution=conf.min_resolution * conf.coef_resolution,
             symmetries=symmetries,
@@ -389,18 +406,14 @@ def get_IAiry_norm_simulation(
             [n2f],
             conf.ff_res,
             mp.Vector3(0, conf.spot_ff, 0),
-            out_angle_in_deg=0,
             f=conf.f
         )
-
         results.append(IAiry_focus_single_wave)
 
-    # Stack results to array shape (ff_res, nfreq)
-    IAiry_focus = np.stack(results, axis=1)
+    IAiry_focus = np.stack(results, axis=1) # Stack results to array shape (ff_res, nfreq)
     if get_base:
         IAiry_base = np.stack(base_results, axis=1)
-    else:
-        IAiry_base = None
+
     np.save(filename_focus_airy, IAiry_focus)
     print(f"Simulation focus result saved to: {filename_focus_airy}")
     np.save(filename_base_airy, IAiry_base)
@@ -424,44 +437,42 @@ def get_Ibase_simulation(
     :param max_run_time:
     :return:
     """
-
     geometry = [mp.Block(
         material=conf.in_material,
         size=mp.Vector3(conf.in_sub, mp.inf, 0),
         center=mp.Vector3(conf.sub_center.x),
     )]
-
     sim = mp.Simulation(
         cell_size=cell,
-        boundary_layers=[mp.PML(thickness=conf.pml, direction=mp.X, side=mp.ALL)],
+        boundary_layers=[mp.PML(thickness=conf.pml, direction=mp.X)],
         sources=sources,
         geometry=geometry,
         resolution=conf.min_resolution * conf.coef_resolution,
-        symmetries=symmetries,  # При наклонном падении света симметрию использовать нельзя
+        symmetries=symmetries,
     )
+    nf2_list = []
 
-    near2far_regions = []
     for freq in frequents_array:
-        near2far_regions.append(
+        nf2_list.append(
             sim.add_near2far(
-                freq,     # центральная частота
-                conf.inc_df,    # ширина спектра
-                1,              # дискретность
+                freq,
+                conf.inc_df,
+                1,
                 monitor
             )
         )
+
     sim.run(until=max_run_time)
-    IBase_all_wave = get_I(
+    IBase_allwave = get_I(
         sim,
-        near2far_regions,
+        nf2_list,
         conf.ff_res,
         mp.Vector3(0, conf.spot_ff, 0),
-        out_angle_in_deg=0,
-        f=conf.f
+        f=conf.f - conf.add_size_cell / 2
     )
-    return [IBase_all_wave], sim
+    return IBase_allwave
 
-def get_I(sim, near2far_region, ff_res, size, out_angle_in_deg, f):
+def get_I(sim, near2far_region, ff_res, size, f):
     """
     :param sim: simulation object
     :param near2far_region: single near2far region or list of near2far regions
@@ -478,13 +489,13 @@ def get_I(sim, near2far_region, ff_res, size, out_angle_in_deg, f):
         far_field = sim.get_farfields(
             region,
             ff_res,
-            center=mp.Vector3(x=f, y=shift_y(angle=out_angle_in_deg)),
+            center=mp.Vector3(x=f, y=0),
             size=size
         )
         return abs(far_field["Ez"]) ** 2
 
     if isinstance(near2far_region, (list, tuple)):
-        # Если передан список регионов, вычисляем для каждого и собираем в columns
+        # Если передан список регионов, вычисляем для каждого и собираем
         I_list = [calculate_single_region(region) for region in near2far_region]
         I_arr = np.column_stack(I_list) if len(I_list) > 1 else I_list[0]
     else:
@@ -500,7 +511,7 @@ def get_I_loc(sim, near2far_region, shift, ff_res, size, f):
     :param ff_res: коэффициент разрешения для дальнего поля
     :param size: mp.Vector3 с ненулевым значением по интересующей координате
     :param out_angle_in_deg: угол для вычисления смещения
-    :param f: фокусное расстояние
+    :param f: фокальная плоскость
     :return:
         Если near2far_region - список: 2D массив shape (n, m),
             где n - размер результата для одного региона, m - количество регионов
@@ -540,130 +551,378 @@ def get_indx_orders(index_angle):
 PLOT
 """
 
-def get_plot_intensity(I_ff, out_angle_in_deg, wavelength_array, abscissa, I_airy=None, isfwhm=True):
+def plot_intensity(I_ff, out_angle_in_deg, wavelength_array, abscissa,
+                   I_norm=None, isfwhm=True, save_path: str = None):
     """
-    :param I_ff: intensity values (normalized from 0 to 1)
-    :param out_angle_in_deg: angle to refraction
+    :param I_ff: intensity values (normalized from 0 to 1 or arbitrary scale)
+    :param out_angle_in_deg: output refraction angle
     :param wavelength_array: array of wavelengths
     :param abscissa: X-axis coordinates
-    :param I_airy: intensity values (for example, from the Airy function), normalized
-    :param isfwhm: print flag FWHM
+    :param I_norm: 1D array of intensity values for normalization reference
+    :param isfwhm: print flag for FWHM
+    :param save_path: optional path to save figure as PDF (if None, figure is not saved)
     """
+
+    # --- Нормализация ---
+    normalized = False
+    if I_norm is not None:
+        if I_norm.ndim != 1:
+            raise ValueError("I_norm must be a 1D array.")
+        norm_max = np.max(I_norm)
+        if norm_max != 0:
+            I_ff = I_ff / norm_max
+            normalized = True
+        else:
+            print("⚠️ Warning: I_norm has zero maximum, normalization skipped.")
+
+    # --- Настройки оформления ---
+    plt.rcParams.update({
+        "font.family": "sans-serif",
+        "font.sans-serif": ["Arial", "Liberation Sans", "DejaVu Sans"],
+        "axes.labelsize": 13,
+        "axes.titlesize": 14,
+        "legend.fontsize": 11,
+        "xtick.labelsize": 11,
+        "ytick.labelsize": 11,
+        "axes.linewidth": 1.0,
+    })
 
     plt.style.use('default')
     plt.figure(dpi=100)
 
-    # --- Far field intensity ---
+    # --- Построение ---
     if len(wavelength_array) == 1:
-        plt.plot(abscissa, I_ff, label=f"Far field ({conf.inc_wavelength} μm)")
-        if I_airy is not None:
-            plt.plot(abscissa, I_airy, '--', label="Airy pattern")
+        plt.plot(abscissa, I_ff, label=f"Far field ({wavelength_array[0]} μm)")
     else:
         for i in range(I_ff.shape[1]):
             plt.plot(abscissa, I_ff[:, i], label=f"Far field (λ={wavelength_array[i]} μm)")
-            if I_airy is not None:
-                if I_airy.ndim == 1:
-                    plt.plot(abscissa, I_airy, '--', label="Airy pattern")
-                else:
-                    plt.plot(abscissa, I_airy[:, i], '--', label=f"Airy pattern (λ={wavelength_array[i]} μm)")
 
-    # --- Axes & legend ---
-    plt.xlabel(f"x coordinate [µm]")
-    plt.ylabel(r"Normalized energy density, |E$_z$|$^2$ (0...1)")
-    plt.title(f"Intensity of CC lens. Out Incident {np.around(out_angle_in_deg, decimals=1)} degree")
+    # --- Подписи и оформление ---
+    plt.xlabel("x coordinate [µm]")
+    plt.ylabel(r"Normalized energy density, |E$_z$|$^2$")
+    plt.title(f"Intensity of CC lens. Out Incident {np.around(out_angle_in_deg, decimals=1)}°")
     plt.legend(loc="upper right")
     plt.tight_layout()
+
+    # --- Сохранение ---
+    if save_path is not None:
+        plt.savefig(save_path, format="pdf", bbox_inches="tight")
+        print(f"📄 Figure saved to: {save_path}")
+
     plt.show()
 
-    # --- FWHM printout ---
+    # --- FWHM ---
     if isfwhm:
-        if len(wavelength_array) == 1:
-            fwhm = get_fwhm(abscissa, I_ff)
-            print(f"FWHM = {fwhm:.2f} µm")
-        else:
-            for i in range(I_ff.shape[1]):
-                fwhm = get_fwhm(abscissa, I_ff[:, i])
+        if normalized:
+            # При нормализации: анализ всех длин волн вместе
+            fwhm_values = get_fwhm(abscissa, I_ff)
+            for i, fwhm in enumerate(fwhm_values):
                 print(f"λ={wavelength_array[i]}: FWHM = {fwhm:.2f} µm")
+        else:
+            # Без нормализации считаем для каждой длины волны отдельно
+            if len(wavelength_array) == 1:
+                fwhm = get_fwhm(abscissa, I_ff)
+                print(f"FWHM = {fwhm:.2f} µm")
+            else:
+                for i in range(I_ff.shape[1]):
+                    fwhm = get_fwhm(abscissa, I_ff[:, i])
+                    print(f"λ={wavelength_array[i]}: FWHM = {fwhm:.2f} µm")
 
 def get_fwhm(abscissa, intensity):
     """
-    Calculation of FWHM (at 0.5) and FWTM (at 0.1)
-    for a one-dimensional intensity profile.
+    Calculate FWHM (Full Width at Half Maximum) for 1D or 2D intensity profiles.
 
-    :param abscissa:
-    :param intensity: array of normalized intensities (0...1)
-    :return: (FWHM, x_left_half, x_right_half, FWTM, x_left_tenth, x_right_tenth)
+    :param abscissa: x-coordinates
+    :param intensity: 1D or 2D array of intensities
+    :return: float (for 1D) or list[float] (for 2D)
     """
-    center = np.argmax(intensity)
-    n = len(intensity)
+    # --- Универсальная функция для одного профиля ---
+    def _fwhm_single(x, I):
+        center = np.argmax(I)
+        n = len(I)
 
-    def find_width(level):
-        """Auxiliary width search function at the level."""
-        left_idx, right_idx = None, None
+        def find_width(level):
+            left_idx, right_idx = None, None
+            for i in range(center, -1, -1):
+                if I[i] <= level:
+                    left_idx = i
+                    break
+            for i in range(center, n):
+                if I[i] <= level:
+                    right_idx = i
+                    break
+            if left_idx is None or right_idx is None:
+                return np.nan
+            return float(x[right_idx] - x[left_idx])
 
-        # поиск влево
-        for i in range(center, -1, -1):
-            if intensity[i] <= level:
-                left_idx = i
-                break
-        # поиск вправо
-        for i in range(center, n):
-            if intensity[i] <= level:
-                right_idx = i
-                break
+        I_norm = I / np.max(I) if np.max(I) != 0 else I
+        return find_width(0.5)
 
-        if left_idx is None or right_idx is None:
-            raise ValueError(f"Couldn't find two level intersections {level}.")
+    # --- Если одномерный профиль ---
+    if intensity.ndim == 1:
+        return _fwhm_single(abscissa, intensity)
 
-        x_left = float(abscissa[left_idx])
-        x_right = float(abscissa[right_idx])
-        width = x_right - x_left
-        return width, x_left, x_right
+    # --- Если многомерный: нормализуем все профили на глобальный максимум ---
+    global_max = np.max(intensity)
+    if global_max == 0:
+        raise ValueError("Intensity array has zero maximum, cannot compute FWHM.")
 
-    # FWHM (0.5)
-    fwhm, x_left_half, x_right_half = find_width(0.5)
+    I_norm = intensity / global_max
 
+    fwhm_list = []
+    for i in range(I_norm.shape[1]):
+        fwhm_i = _fwhm_single(abscissa, I_norm[:, i])
+        fwhm_list.append(fwhm_i)
 
-    return fwhm
+    return fwhm_list
 
-def get_focusing_efficiency(IAiry_norm, abscissa):
+# def get_focusing_efficiency(
+#         airy_focus: np.ndarray,
+#         airy_base: np.ndarray,
+#         abscissa: np.ndarray,
+#         test_focus: Optional[np.ndarray] = None,
+#         test_base: Optional[np.ndarray] = None
+# ) -> Tuple[Optional[np.ndarray], np.ndarray, Optional[np.ndarray], Optional[np.ndarray]]:
+#     """
+#     Calculate focusing efficiency metrics.
+#
+#     Parameters
+#     ----------
+#     airy_focus : np.ndarray
+#         Focused Airy pattern profile(s).
+#     airy_base : np.ndarray
+#         Base/background level for Airy pattern.
+#     abscissa : np.ndarray
+#         Spatial coordinates along the profile.
+#     test_focus : Optional[np.ndarray], optional
+#         Test profile(s) to analyze.
+#     test_base : Optional[np.ndarray], optional
+#         Base/background level for test profile.
+#
+#     Returns
+#     -------
+#     tuple
+#         (arr_STREHL, arr_EER_airy, arr_EER_test, arr_EER_rel)
+#         If test data is not provided, returns (None, arr_EER_airy, None, None)
+#     """
+#     # Validate Airy input shapes
+#     if airy_focus.shape != airy_base.shape:
+#         raise ValueError("airy_focus and airy_base must have the same shape")
+#
+#     if airy_focus.shape[0] != abscissa.size:
+#         raise ValueError("First dimension of focus arrays must match abscissa length")
+#
+#     # Calculate metrics that require only Airy data
+#     dims, waves = airy_focus.shape
+#     dx = np.mean(np.diff(abscissa))
+#     center = 0.5 * (abscissa[0] + abscissa[-1])
+#     airy_diam = np.atleast_1d(conf.airy_diameter)
+#
+#     arr_EER_airy = np.zeros(waves)
+#
+#     for wave in range(waves):
+#         mask = (abscissa >= center - airy_diam[wave] / 2) & (abscissa <= center + airy_diam[wave] / 2)
+#
+#         power_in_airy = np.sum(airy_focus[mask, wave]) * dx
+#         power_total_airy = np.sum(airy_base[:, wave]) * dx
+#
+#         arr_EER_airy[wave] = power_in_airy / power_total_airy if power_total_airy > 0 else 0.0
+#
+#     if test_focus is None or test_base is None:
+#         return None, arr_EER_airy, None, None
+#
+#     if test_focus.shape != test_base.shape:
+#         raise ValueError("test_focus and test_base must have the same shape")
+#
+#     if airy_focus.shape != test_focus.shape:
+#         raise ValueError("Airy and test arrays must have the same shape")
+#
+#     # Вычисляем остальные метрики
+#     airy_flux_norm = airy_focus / airy_base
+#     test_flux_norm = test_focus / test_base
+#     arr_STREHL = np.max(test_flux_norm, axis=0) / np.max(airy_flux_norm, axis=0)
+#
+#     arr_EER_test = np.zeros(waves)
+#     arr_EER_rel = np.zeros(waves)
+#
+#     for wave in range(waves):
+#         mask = (abscissa >= center - airy_diam[wave] / 2) & (abscissa <= center + airy_diam[wave] / 2)
+#
+#         power_in_test = np.sum(test_focus[mask, wave]) * dx
+#         power_total_test = np.sum(test_base[:, wave]) * dx
+#
+#         arr_EER_test[wave] = power_in_test / power_total_test if power_total_test > 0 else 0.0
+#         arr_EER_rel[wave] = arr_EER_test[wave] / arr_EER_airy[wave] if arr_EER_airy[wave] > 0 else 0.0
+#
+#     return arr_STREHL, arr_EER_airy, arr_EER_test, arr_EER_rel
+
+def get_focusing_efficiency(
+        airy_focus: np.ndarray,
+        abscissa: np.ndarray,
+        test_focus: np.ndarray,
+        airy_base: Optional[np.ndarray] = None,
+        test_base: Optional[np.ndarray] = None,
+        *,
+        call_id: Optional[int] = None,
+        results_filename: Optional[str] = None
+) -> Tuple[
+        np.ndarray, np.ndarray, np.ndarray, np.ndarray,
+        float, float, float, float
+]:
     """
-    Calculates focusing efficiency as a fraction of energy
-    in the airy_diameter width range relative to the center of the profile.
+    Calculate focusing efficiency metrics.
 
-    :param IAiry_norm : array_like
-        normalized (to maximum) vector or intensity matrix.
-        - If the dimension is (n,), then there are n profile points for one wavelength.
-        - If the dimension is (n, m), then there are m different wavelengths, each column is a separate profile.
-    :param spot_ff, out_angle_in_deg, shift : params for method get_abscissa
-        Used to generate the coordinates of the abscissa.
-
-    :return eta : float or ndarray
-        Focusing efficiency (0..1).
-        - float if m=1
-        - ndarray of the form (m,) if m>1
+    Returns
+    -------
+    arr_STREHL : np.ndarray
+    arr_EER_airy : np.ndarray
+    arr_EER_test : np.ndarray
+    arr_EER_rel : np.ndarray
+    mean_STREHL : float
+    std_STREHL : float
+    mean_EER_rel : float
+    std_EER_rel : float
     """
-    IAiry_norm = np.atleast_2d(IAiry_norm)
-    if IAiry_norm.shape[0] == 1:  # приведение к (n, m), а не (1, n)
-        IAiry_norm = IAiry_norm.T
 
-    n, m = IAiry_norm.shape
-    dx = np.mean(np.diff(abscissa))
+    # --- Validate shapes ---
+    if airy_focus.shape[0] != abscissa.size:
+        raise ValueError("First dimension of airy_focus must match abscissa length")
+
+    if airy_base is not None and airy_base.shape != airy_focus.shape:
+        raise ValueError("airy_base must have the same shape as airy_focus")
+
+    if test_focus.shape[0] != abscissa.size:
+        raise ValueError("First dimension of test_focus must match abscissa length")
+
+    if test_base is not None and test_base.shape != test_focus.shape:
+        raise ValueError("test_base must have the same shape as test_focus")
+
+    if airy_focus.shape != test_focus.shape:
+        raise ValueError("Airy and test arrays must have the same shape")
+
+    dims, waves = airy_focus.shape
+    dx = float(np.mean(np.diff(abscissa)))
     center = 0.5 * (abscissa[0] + abscissa[-1])
     airy_diam = np.atleast_1d(conf.airy_diameter)
-    if airy_diam.size == 1 and m > 1:
-        airy_diam = np.full(m, airy_diam.item())
-    elif airy_diam.size != m:
-        raise ValueError(f"conf.airy_diameter must be a scalar or an array of length {m}")
 
-    eta = np.zeros(m)
-    for j in range(m):
-        mask = (abscissa >= center - airy_diam[j] / 2) & (abscissa <= center + airy_diam[j] / 2)
-        power_in = np.sum(IAiry_norm[mask, j]) * dx
-        power_total = np.sum(IAiry_norm[:, j]) * dx
-        eta[j] = power_in / power_total if power_total > 0 else 0.0
+    # === EER for Airy ===
+    arr_EER_airy = np.zeros(waves)
 
-    return eta[0] if m == 1 else eta
+    for wave in range(waves):
+        mask = (
+            (abscissa >= center - airy_diam[wave] / 2) &
+            (abscissa <= center + airy_diam[wave] / 2)
+        )
+
+        power_in_airy = np.sum(airy_focus[mask, wave]) * dx
+
+        if airy_base is not None:
+            power_total_airy = np.sum(airy_base[:, wave]) * dx
+        else:
+            power_total_airy = np.sum(airy_focus[:, wave]) * dx
+
+        arr_EER_airy[wave] = (
+            power_in_airy / power_total_airy if power_total_airy > 0 else 0.0
+        )
+
+    # === Normalization for Strehl ===
+    airy_norm = np.zeros_like(airy_focus)
+    test_norm = np.zeros_like(test_focus)
+
+    for wave in range(waves):
+        if airy_base is not None:
+            base = airy_base[:, wave]
+            np.divide(
+                airy_focus[:, wave],
+                base,
+                out=airy_norm[:, wave],
+                where=base != 0
+            )
+        else:
+            energy = np.sum(airy_focus[:, wave]) * dx
+            airy_norm[:, wave] = airy_focus[:, wave] / energy if energy > 0 else 0.0
+
+        if test_base is not None:
+            base = test_base[:, wave]
+            np.divide(
+                test_focus[:, wave],
+                base,
+                out=test_norm[:, wave],
+                where=base != 0
+            )
+        else:
+            energy = np.sum(test_focus[:, wave]) * dx
+            test_norm[:, wave] = test_focus[:, wave] / energy if energy > 0 else 0.0
+
+    # === Strehl ratio ===
+    airy_max = np.max(airy_norm, axis=0)
+    test_max = np.max(test_norm, axis=0)
+    arr_STREHL = np.where(airy_max > 0, test_max / airy_max, 0.0)
+
+    # === EER for test and relative EER ===
+    arr_EER_test = np.zeros(waves)
+    arr_EER_rel = np.zeros(waves)
+
+    for wave in range(waves):
+        mask = (
+            (abscissa >= center - airy_diam[wave] / 2) &
+            (abscissa <= center + airy_diam[wave] / 2)
+        )
+
+        power_in_test = np.sum(test_focus[mask, wave]) * dx
+
+        if test_base is not None:
+            power_total_test = np.sum(test_base[:, wave]) * dx
+        else:
+            power_total_test = np.sum(test_focus[:, wave]) * dx
+
+        arr_EER_test[wave] = (
+            power_in_test / power_total_test if power_total_test > 0 else 0.0
+        )
+        arr_EER_rel[wave] = (
+            arr_EER_test[wave] / arr_EER_airy[wave] if arr_EER_airy[wave] > 0 else 0.0
+        )
+
+    # === Aggregated metrics ===
+    mean_STREHL = float(np.mean(arr_STREHL))
+    std_STREHL = float(np.std(arr_STREHL))
+    mean_EER_rel = float(np.mean(arr_EER_rel))
+    std_EER_rel = float(np.std(arr_EER_rel))
+
+    # === Save results (append to file) ===
+    if results_filename is not None:
+        write_header = not os.path.exists(results_filename)
+
+        with open(results_filename, "a", encoding="utf-8") as f:
+            if write_header:
+                f.write(
+                    "call_id,angle,wave,STREHL,EER_airy,EER_test,EER_rel,"
+                    "mean_STREHL,std_STREHL,mean_EER_rel,std_EER_rel\n"
+                )
+
+            for wave in range(waves):
+                f.write(
+                    f"{call_id},{conf.angle_list[call_id]},{conf.inc_wavelength_array[wave]},"
+                    f"{arr_STREHL[wave]},"
+                    f"{arr_EER_airy[wave]},"
+                    f"{arr_EER_test[wave]},"
+                    f"{arr_EER_rel[wave]},"
+                    f"{mean_STREHL},"
+                    f"{std_STREHL},"
+                    f"{mean_EER_rel},"
+                    f"{std_EER_rel}\n"
+                )
+
+    return (
+        arr_STREHL,
+        arr_EER_airy,
+        arr_EER_test,
+        arr_EER_rel,
+        mean_STREHL,
+        std_STREHL,
+        mean_EER_rel,
+        std_EER_rel,
+    )
 
 def plot_psf(
     nfrec: int,
@@ -672,11 +931,11 @@ def plot_psf(
     abscissa,
     save_path: str = None,
     save_format: str = "pdf",
+    colorbar_to_1: bool = True,
 ) -> None:
     """
     Builds and displays a PSF (Point Spread Function) based on a one-dimensional or two-dimensional
     intensity distribution. Supports saving to PDF or JPEG.
-
 
     :param nfrec : int
         The number of subgraphs (wavelength discreteness).
@@ -689,10 +948,12 @@ def plot_psf(
     :param abscissa : array_like
         An array of coordinates along the X-axis.
     :param save_path : str, optional
-        The path to save the file (for example, "psf_plot.pdf" or "psf_plot.jpeg ").
+        The path to save the file (for example, "psf_plot.pdf" or "psf_plot.jpeg").
         If None, the graph is simply displayed on the screen.
     :param save_format : str, optional
         Save format: "pdf" or "jpeg". The default is "pdf".
+    :param normalize : bool, optional
+        Whether to normalize intensity maps to their maximum values (default: True).
     """
 
     # --- Настройки оформления ---
@@ -733,12 +994,15 @@ def plot_psf(
         else:
             intensity = I[:, idx]
 
-        # Интерполяция и нормализация
+        # Интерполяция
         interp_func = interp1d(x_calculate, intensity, bounds_error=False, fill_value=0.0)
         I2d = interp_func(R)
-        I2d -= I2d.min()
-        if I2d.max() > 0:
-            I2d /= I2d.max()
+
+        # Нормировка по флагу
+        if colorbar_to_1:
+            I2d -= I2d.min()
+            if I2d.max() > 0:
+                I2d /= I2d.max()
 
         # Отображение
         im = axes[idx].imshow(
@@ -750,16 +1014,17 @@ def plot_psf(
         )
 
         title = (
-            f"PSF for {conf.inc_wavelength:.3f} μm"
+            f"PSF for {conf.inc_wavelength:.1f} μm"
             if len(wavelength_array) == 1
-            else f"PSF for {wavelength_array[idx]:.3f} μm"
+            else f"PSF for {wavelength_array[idx]:.1f} μm"
         )
         axes[idx].set(
             title=title,
             xlabel="Spot [μm]",
             ylabel="Spot [μm]",
         )
-        fig.colorbar(im, ax=axes[idx], label="Normalized intensity")
+        cbar_label = "Normalized intensity" if colorbar_to_1 else "Intensity"
+        fig.colorbar(im, ax=axes[idx], label=cbar_label)
 
     # --- Заголовок и разметка ---
     plt.tight_layout()
@@ -776,6 +1041,7 @@ def plot_psf(
 
     else:
         plt.show()
+
 
 def plot_mtf(
         spot_ff: Union[float, Sequence[float]],
@@ -860,7 +1126,7 @@ Spatial area (for example, an aperture).
             polyorder = 2
             mtf_normalized = savgol_filter(mtf_normalized, window_length, polyorder)
 
-        label = f"optimized ({wavelength_array[i]:.3f} μm)"
+        label = f"optimized ({wavelength_array[i]:.1f} μm)"
         ax.plot(freq, mtf_normalized, label=label)
 
     # --- Дифракционный предел ---
@@ -878,7 +1144,7 @@ Spatial area (for example, an aperture).
                     mtf_normalized = savgol_filter(mtf_normalized, window_length, polyorder)
 
                 ax.plot(freq, mtf_normalized, linestyle='--',
-                        label=f"limit_sim ({wavelength_array[i]:.3f} μm)")
+                        label=f"limit_sim ({wavelength_array[i]:.1f} μm)")
         else:
             for lam in wavelength_array:
                 lam_mm = lam * 1e-3
@@ -889,7 +1155,7 @@ Spatial area (for example, an aperture).
                     np.arccos(f_ratio / fc_eff)
                     - (f_ratio / fc_eff) * np.sqrt(1 - (f_ratio / fc_eff) ** 2)
                 )
-                ax.plot(f_ratio, mtf_th, linestyle='--', label=f'limit_theo {lam:.3f} µm')
+                ax.plot(f_ratio, mtf_th, linestyle='--', label=f'dif_lim {lam:.2f} µm')
 
     # --- Adj plots ---
     ax.set_xlim(0, max_view)
@@ -1014,6 +1280,14 @@ def show_lens(
     ax.set_title("Равномерное окружное размещение ячеек")
     plt.show()
 
+def polygon_area(coords):
+    x = coords[:, 0]
+    y = coords[:, 1]
+    return 0.5 * np.abs(
+        np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1))
+    )
+
+
 def generate_lens_gds_2params(
         a_params,
         h_params,
@@ -1025,49 +1299,130 @@ def generate_lens_gds_2params(
         filename: str = 'lens_layout.gds',
         cell_name: str = 'LENS_CELL',
         unit: float = 1e-6,
-        precision: float = 20e-9
+        precision: float = 5e-9,
+        MIN_POLY_AREA: float = 0.05  # μm²
 ) -> None:
     """
     Генерирует многослойный GDSII файл.
-    Высота дискретизируется шагом 100 нм (0.1 мкм).
-    Каждый порядок присутствует во всех слоях до своей высоты h_params[m].
-    Добавляется отдельная ячейка LEGEND с подписями слоев.
+
+    Этап 1:
+        Проверка площади одного сектора для каждого порядка m.
+        Формируется список допустимых порядков.
+
+    Этап 2:
+        Геометрия создаётся только для допустимых порядков.
     """
-    # На случай, если приходят тензоры torch
+
     a_params = np.asarray(a_params, dtype=float)
     h_params = np.asarray(h_params, dtype=float)
     rt = np.asarray(rt, dtype=float)
 
-    # Создаем библиотеку и главную ячейку
+    # ============================================================
+    # ЭТАП 1 — ПРЕДВАРИТЕЛЬНАЯ ПРОВЕРКА ПЛОЩАДЕЙ
+    # ============================================================
+
+    valid_orders = np.ones(orders, dtype=bool)
+
+    print("=== Area pre-check per order ===")
+
+    for m in range(orders):
+        a = max(a_params[m], 1e-3)
+
+        rt0 = 0.0 if m == 0 else rt[m - 1] + 0.0025
+        rt1 = rt[m] - 0.0025
+        # rt0 = 0.0 if m == 0 else rt[m - 1]
+        # rt1 = rt[m]
+        x0 = 0.0 if m == 0 else 0.5 * (rt[m] + rt0)
+        r = x0
+
+        if r < 1e-6:
+            valid_orders[m] = False
+            print(f"[SKIP] order={m}, reason=r too small")
+            continue
+
+        L = np.clip(1.5 / a, 2.0, 10.0)
+        x_left = max(rt0, x0 - L * a)
+        x_right = min(rt1, x0 + L * a)
+
+        if x_right <= x_left:
+            valid_orders[m] = False
+            print(f"[SKIP] order={m}, reason=empty x-range")
+            continue
+
+        x = np.linspace(x_left, x_right, Q)
+        z = np.clip((x - x0) / a, -20, 20)
+        y_profile = a * np.cosh(z)
+
+        ip = np.argmin(y_profile)
+        y_shifted = y_profile - y_profile[ip]
+
+        ymax = 0.5 * (x.max() - x.min())
+        y_top = np.clip(y_shifted, -ymax, ymax)
+        y_bot = np.clip(y_shifted - w, -ymax, ymax)
+
+        xx = np.concatenate([x, x[::-1]])
+        yy = np.concatenate([y_top, y_bot[::-1]])
+
+        xx_local = xx - x0
+
+        test_coords = np.vstack([
+            xx_local + r,
+            yy
+        ]).T
+
+        area = polygon_area(test_coords)
+
+        if area < MIN_POLY_AREA:
+            valid_orders[m] = False
+            print(
+                f"[SKIP] order={m}, "
+                f"area={area:.4e} μm² < MIN_POLY_AREA={MIN_POLY_AREA:.4e} μm²"
+            )
+
+    # ---------- СВОДКА ----------
+    print("=== Area check completed ===\n")
+    total_orders = orders
+    rejected_orders = np.count_nonzero(~valid_orders)
+    accepted_orders = np.count_nonzero(valid_orders)
+
+    print("\n=== Area check summary ===")
+    print(f"Total orders checked : {total_orders}")
+    print(f"Rejected orders      : {rejected_orders}")
+    print(f"Accepted orders      : {accepted_orders}")
+    print("==========================\n")
+
+    # ============================================================
+    # ЭТАП 2 — ГЕНЕРАЦИЯ GDS
+    # ============================================================
+
     lib = gdspy.GdsLibrary(unit=unit, precision=precision)
     cell = lib.new_cell(cell_name)
 
-    # Количество слоев (0–30 включительно => 30 слой)
-    n_layers = n_layers
-    layer_height = 0.1  # мкм
+    layer_height = 0.1  # μm
 
     for layer in range(n_layers):
-        current_height = layer * layer_height  # мкм
+        current_height = layer * layer_height
 
         for m in range(orders):
+            if not valid_orders[m]:
+                continue
+
             a = max(a_params[m], 1e-3)
             h = h_params[m]
 
             if h < current_height - 1e-12:
                 continue
 
-            rt0 = 0.0 if m == 0 else rt[m - 1] + 0.1
-            rt1 = rt[m] - 0.1
-            x0 = 0.0 if m == 0 else (rt[m] + rt0) / 2
+            rt0 = 0.0 if m == 0 else rt[m - 1] + 0.0025
+            rt1 = rt[m] - 0.0025
+            # rt0 = 0.0 if m == 0 else rt[m - 1]
+            # rt1 = rt[m]
+            x0 = 0.0 if m == 0 else 0.5 * (rt[m] + rt0)
             r = x0
-            if r < 1e-6:
-                continue
 
             L = np.clip(1.5 / a, 2.0, 10.0)
             x_left = max(rt0, x0 - L * a)
             x_right = min(rt1, x0 + L * a)
-            if x_right <= x_left:
-                continue
 
             x = np.linspace(x_left, x_right, Q)
             z = np.clip((x - x0) / a, -20, 20)
@@ -1083,6 +1438,8 @@ def generate_lens_gds_2params(
             xx = np.concatenate([x, x[::-1]])
             yy = np.concatenate([y_top, y_bot[::-1]])
 
+            xx_local = xx - x0
+
             w_rad_cell = w / r
             w_rad_gap = w / r
             T_rad = w_rad_cell + w_rad_gap
@@ -1092,14 +1449,14 @@ def generate_lens_gds_2params(
                 theta0 = n * T_rad
                 cos0 = np.cos(theta0)
                 sin0 = np.sin(theta0)
-                xx_local = xx - x0
+
                 coords = np.vstack([
                     xx_local * cos0 - yy * sin0 + r * cos0,
                     xx_local * sin0 + yy * cos0 + r * sin0
                 ]).T
+
                 cell.add(gdspy.Polygon(coords, layer=layer))
 
-    # Сохраняем файл
     lib.write_gds(filename)
     print(f"GDS saved: {filename}")
 

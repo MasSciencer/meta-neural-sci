@@ -2,6 +2,8 @@ import os
 import numpy as np
 import torch
 import pickle
+import meep as mp
+import pandas as pd
 from typing import Union, Sequence
 
 
@@ -171,4 +173,58 @@ def recenter_and_crop(whole_int: np.ndarray, abscissa: np.ndarray, ref_index: in
         print(f"[INFO] Центровка: максимум уже в центре ({ref_max_idx}). Обрезка не требуется.")
 
     return shifted, abscissa_shifted
+
+def make_material_from_csv(filepath, wl_min, wl_max, verbose = False ):
+    """
+    Create a Meep material (mp.Medium) using wavelength-dependent n,k data
+    from a CSV file with columns: wl [μm], n, k.
+    The material is represented using a single LorentzianSusceptibility term
+    averaged over the specified wavelength range.
+    """
+    # --- Load and filter data ---
+    df = pd.read_csv(filepath)
+    df = df[(df["wl"] >= wl_min) & (df["wl"] <= wl_max)]
+    if df.empty:
+        raise ValueError("No data in the specified wavelength range.")
+
+    n = df["n"].to_numpy()
+    k = df["k"].to_numpy()
+
+    # --- Compute complex dielectric constant ε(λ) = (n + i k)^2 ---
+    eps_complex = (n + 1j * k) ** 2
+    eps_real = np.mean(eps_complex.real)
+    eps_imag = np.mean(eps_complex.imag)
+
+    # --- Convert wavelength range to frequency range (1/μm) ---
+    freq_min = 1 / wl_max
+    freq_max = 1 / wl_min
+    valid_range = mp.FreqRange(min=freq_min, max=freq_max)
+
+    # --- Define LorentzianSusceptibility using averaged response ---
+    # This is an approximate single-pole model matching the optical range.
+    center_wl = 0.5 * (wl_min + wl_max)
+    lorentz_freq = 1 / (center_wl * 1)
+    lorentz_gamma = 1 / ((wl_max - wl_min) * 1)
+    lorentz_sigma = abs(eps_imag) * 2  # scaling for absorption
+
+    susc = [
+        mp.LorentzianSusceptibility(
+            frequency=lorentz_freq,
+            gamma=lorentz_gamma,
+            sigma=lorentz_sigma
+        )
+    ]
+
+    # --- Define medium ---
+    material = mp.Medium(
+        epsilon=eps_real,
+        E_susceptibilities=susc,
+        valid_freq_range=valid_range
+    )
+
+    if verbose:
+        print(f"Material created from '{filepath}'")
+        print(f"  wavelength range: {wl_min:.2f}–{wl_max:.2f} µm")
+        print(f"  average ε = {eps_real:.3f} + {eps_imag:.3f}j")
+    return material, eps_real
 
