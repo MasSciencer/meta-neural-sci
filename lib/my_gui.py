@@ -60,6 +60,6 @@ class LiveInfoPanel:
         """
 
     def show(self):
-        """Создает новую панель в текущем месте вывода"""
+        """Display a new panel at the current output location."""
         html = widgets.HTML(self._generate_html())
         display(html)

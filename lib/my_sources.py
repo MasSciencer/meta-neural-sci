@@ -3,22 +3,22 @@ import numpy as np
 
 def refraction_input(input_angle_in_deg, epsilon):
     """
-    Переводит угол падения из воздуха в угол распространения внутри подложки
-    по закону преломления.
+    Convert an incidence angle in air to the propagation angle inside the substrate
+    using Snell's law.
 
-    :param input_angle_in_deg: угол падения в градусах (int, float или list)
-    :param epsilon: диэлектрическая проницаемость среды
-    :return: угол в радианах внутри среды (того же типа, что и входной угол)
+    :param input_angle_in_deg: Incidence angle in degrees (int, float, or list).
+    :param epsilon: Relative permittivity of the medium.
+    :return: Angle in radians inside the medium, with the same type as the input.
     """
     n2 = np.sqrt(epsilon)
 
-    # Преобразуем в массив для унифицированных операций
+    # Convert to an array for consistent operations.
     input_array = np.atleast_1d(input_angle_in_deg)
     input_radians = np.radians(input_array)
 
     output_radians = np.arcsin(np.sin(input_radians) / n2)
 
-    # Возвращаем результат того же типа, что и вход
+    # Return the same type as the input.
     if isinstance(input_angle_in_deg, (list, np.ndarray)):
         return output_radians.tolist()
     else:
@@ -34,15 +34,15 @@ k_point_normal = mp.Vector3(0, 0, 0) # normal incident
 class FocusedEigenmodeSource:
     def __init__(self, diaphragm, frequency, center, df, focus_point, verbose=False):
         """
-        Источник с использованием EigenModeSource, формирующий фронт,
-        фокусирующийся в точку на расстоянии f по оси z.
+        Use an EigenModeSource to create a wavefront
+        focused at distance f along the x axis.
 
-        :param diaphragm: диаметр апертуры (вдоль y)
-        :param frequency: частота
-        :param center: положение источника (mp.Vector3)
-        :param df: ширина источника
+        :param diaphragm: Aperture diameter along y.
+        :param frequency: Source frequency.
+        :param center: Source position (mp.Vector3).
+        :param df: Source frequency bandwidth.
         :param focus_point: mp.Vector3
-        :param verbose: вывод параметров
+        :param verbose: Whether to print source parameters.
         """
         self.diaphragm = diaphragm
         self.frequency = frequency
@@ -51,7 +51,7 @@ class FocusedEigenmodeSource:
         self.focus_distance = focus_point.x
         self.verbose = verbose
 
-        # волновое число в среде
+        # Wavenumber in the medium.
         self.k0 = 2 * np.pi * frequency
 
         self._configure_source()
@@ -61,12 +61,12 @@ class FocusedEigenmodeSource:
     def _configure_source(self):
         def lens_phase(r):
             """
-            Фазовый профиль идеальной линзы (без амплитудного затухания).
-            Фокус в точке (x=f, y=0).
+            Ideal lens phase profile without amplitude attenuation.
+            The focal point is (x=f, y=0).
             """
             dx = self.focus_distance - r.x
             dy = r.y
-            R = np.sqrt(dx ** 2 + dy ** 2)  # путь до фокуса
+            R = np.sqrt(dx ** 2 + dy ** 2)  # Distance to the focal point.
             return np.exp(-1j * self.k0 * R)
 
         self.sources = mp.EigenModeSource(
@@ -91,8 +91,8 @@ class FocusedEigenmodeSource:
 
 class BatchKvectorSource:
     """
-    Принимает массив частот и все остальные параметры,
-    под капотом создаёт по KvectorSource на каждую частоту.
+    Accept an array of frequencies and the remaining source parameters,
+    then create one KvectorSource per frequency.
     """
     def __init__(self, frequencies, dfreq, diaphragm, center, angle_in_rad):
         self.frequencies = np.asarray(frequencies)
@@ -100,7 +100,7 @@ class BatchKvectorSource:
         self.diaphragm   = diaphragm
         self.center      = center
         self.angle_in_rad       = angle_in_rad
-        # создаём объекты-источники
+        # Create the source objects.
         self._instances = [
             KvectorSource(
                 frequency=f,
@@ -113,14 +113,14 @@ class BatchKvectorSource:
 
     def get_sources(self):
         """
-        Возвращает плоский список всех mp.Source.
+        Return a flat list of all mp.Source objects.
         """
-        # если KvectorSource.get_sources() возвращает список,
-        # можно сделать flatten, иначе просто collect:
+        # Flatten list-valued get_sources() results;
+        # otherwise, append each source directly.
         result = []
         for inst in self._instances:
             src = inst.get_sources()
-            # если get_sources() — список:
+            # Handle list-valued get_sources() results.
             if isinstance(src, (list, tuple)):
                 result.extend(src)
             else:
@@ -129,13 +129,13 @@ class BatchKvectorSource:
 
     def get_k_vectors(self):
         """
-        Для каждого источника возвращает его волновой вектор.
+        Return the wave vector for each source.
         """
         return [inst.get_k_vector() for inst in self._instances]
 
     def __iter__(self):
         """
-        Чтобы можно было итерироваться прямо по списку mp.Source:
+        Allow direct iteration over the list of mp.Source objects.
             for src in BatchKvectorSource(...): ...
         """
         return iter(self.get_sources())
@@ -143,8 +143,8 @@ class BatchKvectorSource:
 
 class BatchEigenmodeSource:
     """
-    Принимает массив частот
-    создаёт по EigenmodeSource на каждую частоту.
+    Accept an array of frequencies and
+    create one EigenmodeSource per frequency.
     """
 
     def __init__(self, frequencies, df, diaphragm, center, resolution, angle_in_rad, epsilon, verbose):
@@ -156,7 +156,7 @@ class BatchEigenmodeSource:
         self.angle_in_rad = angle_in_rad
         self.epsilon = epsilon
         self.verbose = verbose
-        # создаём объекты-источники
+        # Create the source objects.
         self._instances = [
             EigenmodeSource(
                 diaphragm=self.diaphragm,
@@ -172,13 +172,13 @@ class BatchEigenmodeSource:
 
     def get_sources(self):
         """
-        Возвращает плоский список всех mp.Source.
+        Return a flat list of all mp.Source objects.
         """
-        # если KvectorSource.get_sources() возвращает список
+        # Flatten list-valued get_sources() results.
         result = []
         for inst in self._instances:
             src = inst.get_sources()
-            # если get_sources() — список:
+            # Handle list-valued get_sources() results.
             if isinstance(src, (list, tuple)):
                 result.extend(src)
             else:
@@ -187,13 +187,13 @@ class BatchEigenmodeSource:
 
     def get_k_vectors(self):
         """
-        Для каждого источника возвращает его волновой вектор.
+        Return the wave vector for each source.
         """
         return [inst.get_k_vector() for inst in self._instances]
 
     def __iter__(self):
         """
-        Чтобы можно было итерироваться прямо по списку mp.Source:
+        Allow direct iteration over the list of mp.Source objects.
             for src in BatchKvectorSource(...): ...
         """
         return iter(self.get_sources())

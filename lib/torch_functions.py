@@ -44,7 +44,7 @@ def calculate_radii(D, f, wavelength, orders, split):
         r0 = valid_radii[0]
         # make split-1 points: r0/split, 2*r0/split, ..., (split-1)*r0/split
         subdiv = torch.arange(1, split, dtype=dtype, device=device) * r0 / split
-        # объединяем
+        # Concatenate the results.
         valid_radii = torch.cat((subdiv, valid_radii), dim=0)
 
     return valid_radii
@@ -160,10 +160,10 @@ def plot_curve(x, y, X_sections, y0, n):
     x = x.detach().cpu().numpy() if isinstance(x, torch.Tensor) else x
     y = y.detach().cpu().numpy() if isinstance(y, torch.Tensor) else y
 
-    # Рисуем кривую
+    # Plot the curve.
     ax.plot(x, y, color=colors[n % len(colors)], linewidth=0.5)
 
-    # Выделяем точки пересечения красным
+    # Highlight intersections in red.
     ax.scatter(X_sections, np.full_like(X_sections, y0), color='red', s=10, zorder=3)
 
 def material_grid_weight_1d(
@@ -196,7 +196,7 @@ def material_grid_weight_1d(
 
     result_weights = []
     for m in range(len(a_params)):
-        # параметры
+        # Parameters.
         a = torch.clamp(a_params[m], min=1e-3)
         h = torch.clamp(h_params[m], min=1e-3)
         N_x, N_y = resolutions[m]
@@ -206,11 +206,11 @@ def material_grid_weight_1d(
         x0 = torch.zeros((), device=device) if m == 0 else (rt_tf[m] + rt0) / 2
         x = torch.linspace(rt0, rt_tf[m], Q, device=device)
 
-        # профиль по x
+        # Profile along x.
         z = torch.clamp((x - x0) / a, min=-20, max=20)
         y_profile = a * torch.cosh(z)
 
-        # сбор пересечений
+        # Collect intersections.
         pure_x_list = []
         for n in range(stack, -1, -1):
             ip = torch.argmin(y_profile)
@@ -270,7 +270,7 @@ def material_grid_weight_1d(
                     mask_x = torch.sigmoid(-arg_x) * 2
                     result_x = torch.max(result_x, mask_x)
                     mask_h = global_h <= h
-                    result_h = result_h.clone()  # создаём копию
+                    result_h = result_h.clone()  # Create a copy.
                     result_h = result_h.masked_fill(mask_h, 1.0)
                 else:
                     mask_x = ((global_x >= start) & (global_x <= end))
@@ -481,7 +481,7 @@ def material_grid_weight_2d(
 #         pure_x_list = []
 #         for n in range(stack, -1, -1):
 #
-#             # ----- базовые кривые -----
+#             # ----- Base curves -----
 #             ip = torch.argmin(y_profile)
 #             y_shifted = y_profile - y_profile[ip]
 #             ymax = 0.5 * (x.max() - x.min())
@@ -492,35 +492,35 @@ def material_grid_weight_2d(
 #             yy = torch.cat([y_top, y_bot.flip(0)], dim=0)
 #
 #             # =========================================================
-#             #     1. ЛИНЕЙНЫЙ СДВИГ
+#             #     1. LINEAR SHIFT
 #             # =========================================================
 #             dy = n * w
 #             xx_shift = xx
 #             yy_shift = yy + dy
 #
 #             # =========================================================
-#             #     2. УГЛОВОЕ СМЕЩЕНИЕ ДЛЯ (n > 0)
+#             #     2. ANGULAR OFFSET FOR (n > 0)
 #             # =========================================================
 #
 #             if m == 0:
-#                 # Полное отключение вращения для первого сектора
+#                 # Disable rotation for the first sector.
 #                 xx_rot = xx
 #                 yy_rot = yy + 2 * n * w
 #             else:
-#                 # абсолютный радиус центра сектора
+#                 # Absolute radius of the sector center.
 #                 r = list_crt[m]
 #
-#                 # базовое угловое смещение (скаляр)
+#                 # Base angular offset (scalar).
 #                 base_theta = w / (r + 1e-9)
 #                 base_theta = torch.as_tensor(base_theta, device=device)
 #
-#                 # угол поворота зависит от номера линии n
+#                 # Rotation angle depends on the line index n.
 #                 theta = n * base_theta
 #
 #                 cos_t = torch.cos(theta)
 #                 sin_t = torch.sin(theta)
 #
-#                 # вращение вокруг глобального центра
+#                 # Rotate around the global center.
 #                 xx_rot = xx_shift * cos_t - yy_shift * sin_t
 #                 yy_rot = xx_shift * sin_t + yy_shift * cos_t
 #
@@ -615,24 +615,24 @@ def auto_initial(
     Generates a torch.Dimension tensor (orders,) with coefficients,
     starting with the base_value and going up/down.
 
-    :param orders: число порядков (длина вектора)
-    :param base_value: значение для порядка 0
-    :param bias: коэффициент изменения (шаг для linear, основание для exp)
-    :param is_rise: если True — значения растут по мере роста индекса, иначе — убывают
-    :param mode: 'linear' или 'exponential'
-    :param min_value: нижняя граница финальных значений
-    :param max_value: верхняя граница финальных значений
-    :param output: если True — строит график
-    :return: torch.Tensor с итоговыми коэффициентами
+    :param orders: Number of orders (vector length).
+    :param base_value: Value for order 0.
+    :param bias: Change coefficient (step for linear mode, base for exponential mode).
+    :param is_rise: True increases values with the index; False decreases them.
+    :param mode: Either 'linear' or 'exponential'.
+    :param min_value: Lower bound on the final values.
+    :param max_value: Upper bound on the final values.
+    :param output: Whether to plot the result.
+    :return: torch.Tensor containing the resulting coefficients.
     """
     idx = torch.arange(orders, dtype=torch.float32)
 
     if mode == 'linear':
-        # линейно: base_value ± bias * index
+        # Linear: base_value +/- bias * index.
         vals = base_value + bias * idx if is_rise else base_value - bias * idx
 
     elif mode == 'exp':
-        # экспоненциально: base_value * bias^index или / bias^index
+        # Exponential: base_value * bias^index or base_value / bias^index.
         if is_rise:
             vals = base_value * (bias ** idx)
         else:
@@ -640,7 +640,7 @@ def auto_initial(
     else:
         raise ValueError("the mode should be 'linear' or 'exponential'")
 
-    # применение границ
+    # Apply the bounds.
     vals = torch.clamp(vals, min=min_value, max=max_value)
 
     if output:
@@ -658,13 +658,13 @@ def auto_initial(
 
 def get_effective_lr(optimizer: torch.optim.Optimizer, verbose: bool = False) -> float:
     """
-    Возвращает среднюю эффективную скорость обучения (effective learning rate)
-    для Adam / AdamW оптимизатора.
-    При verbose=True выводит значения для всех параметров.
+    Return the mean effective learning rate
+    for an Adam or AdamW optimizer.
+    Print values for all parameters when verbose=True.
 
-    Формула:
+    Formula:
         effective_lr = lr / (sqrt(v_hat) + eps)
-    где v_hat — скорректированная экспоненциальная оценка дисперсии градиента.
+    where v_hat is the bias-corrected exponential estimate of the gradient variance.
     """
     eff_lrs = []
 

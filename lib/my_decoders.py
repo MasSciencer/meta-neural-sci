@@ -18,10 +18,10 @@ class SigmoidDecoder(torch.nn.Module):
 #         self.scale = scale
 #
 #     def forward(self, u):
-#         # экспоненциальный рост, но c теплом и масштабом
+#         # Exponential growth with temperature and scale parameters.
 #         v = u / self.temp
 #         p = torch.exp(v) * self.scale
-#         # ограничим чтобы не взрываться:
+#         # Clamp the result to avoid unbounded growth.
 #         return torch.clamp(p, max=100)
 #
 # class Decoder(torch.nn.Module):

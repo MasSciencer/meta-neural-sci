@@ -33,7 +33,7 @@ plt.ylabel('y (μm)')
 plt.axis('equal')
 
 def update(frame):
-    global cax  # Доступ к глобальному объекту cax
+    global cax
     global global_state
     aperture_diameter = frame  # изменяем диаметр апертуры с каждым кадром
     x = np.linspace(-aperture_diameter / 2, aperture_diameter / 2, num_points)

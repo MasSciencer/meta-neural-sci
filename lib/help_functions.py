@@ -25,7 +25,7 @@ def get_max_angle_in_deg(D_aperture: float, D_pinhole: float, gap_from_pinhole_t
 def get_angle_list(n_angles: int, D_pinhole: float, gap_from_pinhole_to_surface: float):
     angle_list = []
     for i in range(n_angles):
-        next_angle_in_rad = np.arctan ((i*D_pinhole) / (2 * gap_from_pinhole_to_surface))
+        next_angle_in_rad = np.arctan ((i*D_pinhole) / gap_from_pinhole_to_surface)
         next_angle_in_deg = np.rad2deg(next_angle_in_rad)
         angle_list.append(next_angle_in_deg)
     return angle_list
@@ -35,7 +35,7 @@ def find_D_pinhole(
         D_aperture: float,
 ) -> float:
     """
-    Definition: Функция на основе дискретности оптимизируемых углов позволяет оценить диаметр диафрагмы
+    Definition: Estimate the diaphragm diameter from the number of optimization angles.
 
     :param n_angels:
     :param D_aperture:
@@ -56,18 +56,18 @@ def save_params(
     pt_dir: str = "."
 ):
     """
-    Сохранить тензор или список тензоров:
+    Save a tensor or a sequence of tensors:
 
-    - Если params — torch.Tensor, сохраняет его в name.npy и name.pt.
-    - Если params — список/кортеж torch.Tensor, сохраняет весь список
-      в name.npy (как object array) и name.pt.
+    - If params is a torch.Tensor, save it to name.npy and name.pt.
+    - If params is a list or tuple of torch.Tensor objects, save the entire sequence
+      to name.npy (as an object array) and name.pt.
 
     Args:
         params (torch.Tensor or Sequence[torch.Tensor]):
-            тензор или список тензоров для сохранения.
-        name (str): базовое имя файла (без расширения).
-        np_dir (str): директория для .npy (по умолчанию текущая).
-        pt_dir (str): директория для .pt (по умолчанию текущая).
+            Tensor or sequence of tensors to save.
+        name (str): Base filename without an extension.
+        np_dir (str): Directory for .npy files (current directory by default).
+        pt_dir (str): Directory for .pt files (current directory by default).
     """
     os.makedirs(np_dir, exist_ok=True)
     os.makedirs(pt_dir, exist_ok=True)
@@ -76,7 +76,7 @@ def save_params(
     pt_path = os.path.join(pt_dir, f"{name}.pt")
 
     if isinstance(params, torch.Tensor):
-        # --- Одиночный тензор ---
+        # --- Single tensor ---
         tensor_cpu = params.detach().cpu()
         np_array = tensor_cpu.numpy()
         np.save(np_path, np_array)
@@ -85,17 +85,17 @@ def save_params(
         print(f"[Tensor] Saved Torch tensor to {pt_path}")
 
     elif isinstance(params, (list, tuple)):
-        # --- Список тензоров ---
+        # --- Sequence of tensors ---
         if not all(isinstance(t, torch.Tensor) for t in params):
-            raise ValueError("Все элементы списка должны быть torch.Tensor")
+            raise ValueError("All sequence elements must be torch.Tensor objects")
 
-        # Конвертируем каждый тензор в NumPy
+        # Convert each tensor to NumPy.
         np_list = [t.detach().cpu().numpy() for t in params]
-        # Упаковываем в object-array, чтобы numpy.save понял, что это разнородные формы
+        # Use an object array to support tensors with different shapes.
         obj_array = np.array(np_list, dtype=object)
         np.save(np_path, obj_array, allow_pickle=True)
 
-        # Сохраняем оригинальный список тензоров
+        # Save the original sequence of tensors.
         torch.save(params, pt_path)
 
         print(f"[List]   Saved list of {len(params)} NumPy arrays to {np_path}")
@@ -106,71 +106,71 @@ def save_params(
 
 def save_history(loc_history=None, save=True, index=None):
     """
-    Сохраняет или загружает словарь loc_history в файл.
+    Save or load the loc_history dictionary.
 
-    Параметры:
-        loc_history (dict | None): словарь для сохранения (если save=True).
-        save (bool): True -> сохранить, False -> загрузить.
-        index (int | None): если указан, добавляется к имени файла ("loc_history_angle_{index}.pkl").
+    Parameters:
+        loc_history (dict | None): Dictionary to save when save=True.
+        save (bool): True saves the dictionary; False loads it.
+        index (int | None): Optional filename suffix ("loc_history_angle_{index}.pkl").
 
-    Возвращает:
-        str | dict: при сохранении возвращает имя файла, при загрузке — словарь.
+    Returns:
+        str | dict: Filename when saving; dictionary when loading.
     """
     filename = "loc_history.pkl" if index is None else f"loc_history_angle_{index}.pkl"
 
     if save:
         with open(filename, "wb") as f:
             pickle.dump(loc_history, f)
-        print(f"[INFO] История сохранена в {filename}")
+        print(f"[INFO] History saved to {filename}")
         return filename
     else:
         with open(filename, "rb") as f:
             loc_history = pickle.load(f)
-        print(f"[INFO] История загружена из {filename}")
+        print(f"[INFO] History loaded from {filename}")
         return loc_history
 
 def recenter_and_crop(whole_int: np.ndarray, abscissa: np.ndarray, ref_index: int):
     """
-    Центрирует и симметрично обрезает IOptimized так, чтобы максимум выбранной длины волны оказался в центре.
-    Возвращает обрезанный массив и соответствующий ему вектор abscissa.
+    Center and symmetrically crop IOptimized so the selected wavelength peak is at the center.
+    Return the cropped array and its corresponding abscissa vector.
 
     Parameters
     ----------
     IOptimized : np.ndarray
-        Массив размером (n, m), где n - количество точек, m - количество длин волн.
+        Array of shape (n, m), with n sample points and m wavelengths.
     abscissa : np.ndarray
-        Вектор длиной n, абсолютные координаты точек (например, в мкм).
+        Vector of length n containing absolute sample coordinates (e.g., in microns).
     ref_index : int
-        Индекс длины волны, используемой как эталон для центровки (столбец).
+        Wavelength column index used as the reference for centering.
 
     Returns
     -------
     (np.ndarray, np.ndarray)
-        - Новый массив (n', m), обрезанный и центрированный.
-        - Новый вектор abscissa длиной n'.
+        - Centered, cropped array of shape (n', m).
+        - Abscissa vector of length n'.
     """
     n, m = whole_int.shape
     center = n // 2
 
-    # индекс максимума у эталонной длины волны
+    # Find the peak index for the reference wavelength.
     ref_max_idx = np.argmax(whole_int[:, ref_index])
 
-    # величина сдвига
+    # Compute the shift.
     shift = center - ref_max_idx
 
-    # сдвигаем данные
+    # Shift the data.
     shifted = np.roll(whole_int, shift, axis=0)
     abscissa_shifted = np.roll(abscissa, shift)
 
-    # считаем, сколько точек нужно обрезать с каждой стороны
+    # Determine how many points to crop from each side.
     cut = abs(shift)
     if cut > 0:
         shifted = shifted[cut:-cut, :]
         abscissa_shifted = abscissa_shifted[cut:-cut]
-        print(f"[INFO] Центровка: максимум был на {ref_max_idx}, сдвиг = {shift}. "
-              f"Обрезано {cut} точек с каждой стороны. Итоговая длина = {len(abscissa_shifted)}")
+        print(f"[INFO] Centering: peak was at {ref_max_idx}, shift = {shift}. "
+              f"Cropped {cut} points from each side. Final length = {len(abscissa_shifted)}")
     else:
-        print(f"[INFO] Центровка: максимум уже в центре ({ref_max_idx}). Обрезка не требуется.")
+        print(f"[INFO] Centering: peak is already centered ({ref_max_idx}). No cropping needed.")
 
     return shifted, abscissa_shifted
 

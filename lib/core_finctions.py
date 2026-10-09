@@ -267,9 +267,9 @@ def init_loc_opt_rotate(
 
 def init_loc_opt_hyper(a_initial, h_initial, p_min, p_max, h_min, h_max, lr, regime):
     def encode_param(value, vmin, vmax):
-        # нормализуем значение в [0,1] и применяем logit для перевода в (-inf, inf)
+        # Normalize to [0, 1] and apply logit to map to (-inf, inf).
         norm = (value - vmin) / (vmax - vmin)
-        # защитимся от выхода за диапазон
+        # Clamp values to avoid leaving the valid range.
         norm = torch.clamp(norm, 1e-6, 1 - 1e-6)
         return torch.logit(norm)
 
@@ -382,7 +382,7 @@ def run_loc_opt(opt_torch, loc_rt_np, loc_drt_np, loc_optimizer, scheduler, loc_
         # x - Tensor (Nx_resolution, 1)
         x_list = None
         if regime == 2 or regime == 1.5:
-            # h_params как вектор
+            # Treat h_params as a vector.
             x_list = tf.material_grid_weight_2d(a_params, h_params, conf.at_hei, conf.stack,
                                                 rt_tf=rt_tf, drt_tf=drt_tf,
                                                 resolutions=resolutions, Q=conf.Q, w=conf.w, LIMIT_SHAPE=conf.LIMIT_SHAPE,
@@ -395,7 +395,7 @@ def run_loc_opt(opt_torch, loc_rt_np, loc_drt_np, loc_optimizer, scheduler, loc_
 
         # 5.2. calculate the function and its gradient using meep.adjoint.opt
         # opt expects a list of tensors x, returns a scalar f0 and a list of gradients [grad_x]
-        value = opt_torch(*x_list)  # возвращает тензор-скаляр
+        value = opt_torch(*x_list)  # Returns a scalar tensor.
 
         # 5.3. transferring the gradient to params via the chain rule:
         # dx/dparams gives us get_weights.backward(), therefore just calling .backward() from -f0 (maximize f0)
@@ -458,8 +458,8 @@ def viz_loc_opt(
     loc_history,
     best_a_params,
     best_h_params,
-    save_path: str = None,            # <-- None = не сохранять
-    save_format: str = "pdf"          # <-- "pdf" или "jpeg"
+    save_path: str = None,            # None disables saving.
+    save_format: str = "pdf"          # "pdf" or "jpeg"
 ):
     """
     Visualizes the optimization process and optimized parameters.

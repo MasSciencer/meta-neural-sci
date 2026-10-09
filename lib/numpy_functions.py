@@ -21,16 +21,16 @@ class AdaptiveResolution:
         h_dim: int,
     ):
         """
-        :param drt: ширины сегментов по x
-        :param x_dim: фиксированное разрешение по x
-        :param h_dim: разрешение по y
+        :param drt: Segment widths along x.
+        :param x_dim: Fixed resolution along x.
+        :param h_dim: Resolution along y.
         """
         self.drt = list(drt)
         self.x_dim = x_dim
         self.height_dim = h_dim
 
     def generate(self) -> List[Tuple[int, int]]:
-        """Возвращает список разрешений в формате [(w, h), ...]"""
+        """Return resolutions as a list of (width, height) tuples."""
         return [(self.x_dim, self.height_dim) for _ in self.drt]
 
     def __iter__(self):
@@ -62,66 +62,66 @@ def cut_y(xx, yy, y0):
             x_intersection = x1 + (y0 - y1) * (x2 - x1) / (y2 - y1)
             x_values.append(x_intersection)
 
-    # Сортируем значения по возрастанию
+    # Sort values in ascending order.
     x_values.sort()
 
     return np.array(x_values)
 
 def calculate_radii(D, f, wavelength, pure_orders, split):
     """
-    Вычисляет радиусы на поверхности линзы, на которых происходит полный фазовый сдвиг от 0 до 2π,
-    с возможностью дробления первого промежутка.
+    Compute lens surface radii at which the phase completes a full cycle from 0 to 2*pi,
+    with optional subdivision of the first interval.
 
-    :param D: Диаметр линзы.
-    :param f: Фокусное расстояние линзы.
-    :param wavelength: Длина волны света.
-    :param pure_orders: Максимальное значение n для расчета радиусов.
-    :param split: На сколько частей дробить первый радиус (r[0]).
-                  Если <=1, дробление не производится.
-    :return: radii: Список радиусов.
+    :param D: Lens diameter.
+    :param f: Lens focal length.
+    :param wavelength: Wavelength of light.
+    :param pure_orders: Maximum n used to compute the radii.
+    :param split: Number of subdivisions of the first radius (r[0]).
+                  Values <= 1 disable subdivision.
+    :return: radii: List of radii.
     """
-    # Собираем базовый список радиусов для n = 1, ..., pure_orders
+    # Build the initial list of radii for n = 1, ..., pure_orders.
     radii = []
     for n in range(1, pure_orders + 1):
         r = np.sqrt((n * wavelength)**2 + 2 * n * wavelength * f)
         if r <= D / 2:
             radii.append(r)
         else:
-            print(f"Предупреждение: {pure_orders + 1 - n} радиусов были отброшены. Превышают D/2.")
+            print(f"Warning: {pure_orders + 1 - n} radii were discarded because they exceed D/2.")
             break
 
-    # Если требуется дробление первого радиуса
+    # Subdivide the first radius if requested.
     if split and split > 1 and len(radii) > 0:
         first_r = radii[0]
-        # Генерируем split точек: first_r * (1/split), (2/split), ..., (split/split == 1)*first_r
+        # Generate split points: first_r * (1/split), ..., first_r * (split/split).
         subdivisions = [first_r * i / split for i in range(1, split + 1)]
-        # Заменяем оригинальный первый радиус на все полученные части
+        # Replace the first radius with all subdivision points.
         radii = subdivisions + radii[1:]
 
     return radii
 
 def calculate_radii_step(D, orders):
     """
-    Вычисляет набор радиусов, получающихся при равномерном делении радиуса линзы на orders частей.
+    Compute radii by dividing the lens radius into orders equal intervals.
 
     Args:
-        D: Диаметр линзы
-        orders: Количество сегментов радиуса (int или скалярный tensor)
+        D: Lens diameter.
+        orders: Number of radial segments (int or scalar tensor).
 
     Returns:
-        numpy радиусов (float64), упорядоченный по возрастанию,
-        размерностью [orders], в диапазоне (0, D/2].
+        A NumPy array of radii (float64), sorted in ascending order,
+        with shape [orders] and values in (0, D/2].
     """
-    # orders нам нужен как целое число для arange
+    # Convert orders to an integer for arange.
     orders_int = int(orders)
 
-    # Полный радиус
+    # Full lens radius.
     r_max = D / 2
 
-    # Индексы от 1 до orders_int
+    # Indices from 1 to orders_int.
     n = np.arange(1, orders_int + 1)
 
-    # Разбиваем радиус на равные части: r_i = (i / orders_int) * r_max
+    # Divide the radius into equal intervals: r_i = (i / orders_int) * r_max.
     radii = n * (r_max / orders_int)
 
     return radii
@@ -141,9 +141,9 @@ def get_loc_orders(diaphragm_orders, is_center):
 
 def get_drt_midrt(rt, orders, is_center=True):
     """
-    :param rt: numpy array с радиусами
-    :param orders: количество порядков
-    :param is_center: режим вычисления
+    :param rt: NumPy array of radii.
+    :param orders: Number of orders.
+    :param is_center: Whether to use the central-region calculation mode.
     :return: drt (np.ndarray), midrt (np.ndarray)
     """
 
@@ -183,9 +183,9 @@ def setup_simulation(geometry, sources, df, nfreq, plot=True, coef_resolution=co
 
     # Adding a near2far area
     near2far_region = sim.add_near2far(
-        conf.inc_fcen,  # центральная частота
-        df,  # ширина спектра
-        nfreq,  # дискретность частот
+        conf.inc_fcen,  # Center frequency.
+        df,  # Frequency bandwidth.
+        nfreq,  # Number of frequency samples.
         mp.Near2FarRegion(center=conf.flux_center, size=mp.Vector3(y=conf.spot_ff)),
     )
 
@@ -210,10 +210,10 @@ def shift_y(angle, f = conf.f, is_tan_law = conf.is_tan_law):
 
 def get_abscissa (spot_ff, y, angle, shift = None):
     """
-    :param spot_ff: область построения
+    :param spot_ff: Plotting region.
     :param angle:
-    :param y: ордината
-    :param shift: опциональное добавочное значение сдвига
+    :param y: Ordinate.
+    :param shift: Optional additional coordinate shift.
     """
     size_of_y = len(y)
     if shift != None: add_y = shift
@@ -224,15 +224,15 @@ def get_abscissa (spot_ff, y, angle, shift = None):
 
 def compute_I_base(sim, dtf_obj, inc_nfreq):
     """
-    Вычисляет значения I_base для каждой из inc_nfreq частот.
+    Compute I_base values for each of the inc_nfreq frequencies.
 
-    Параметры:
-    sim : объект симуляции MEEP
-    dtf_obj : объект DFT
-    inc_nfreq : количество частотных точек
+    Parameters:
+    sim : Meep simulation object.
+    dtf_obj : DFT object.
+    inc_nfreq : Number of frequency samples.
 
-    Возвращает:
-    numpy.ndarray : массив значений I_base для каждой частоты
+    Returns:
+    numpy.ndarray : Array of I_base values for each frequency.
     """
     I_base_list = []
     for i in range(inc_nfreq):
@@ -476,14 +476,14 @@ def get_I(sim, near2far_region, ff_res, size, f):
     """
     :param sim: simulation object
     :param near2far_region: single near2far region or list of near2far regions
-    :param ff_res: коэффициент разрешения для дальнего поля
-    :param size: mp.Vector3 с ненулевым значением по интересующей координате
-    :param out_angle_in_deg: угол для вычисления смещения
-    :param f: фокусное расстояние
+    :param ff_res: Far-field resolution factor.
+    :param size: mp.Vector3 with a nonzero component along the axis of interest.
+    :param out_angle_in_deg: Angle used to compute the offset.
+    :param f: Focal length.
     :return:
-        Если near2far_region - список: 2D массив shape (n, m),
-            где n - размер результата для одного региона, m - количество регионов
-        Если одиночный регион: 1D массив shape (n,)
+        If near2far_region is a list: a 2D array of shape (n, m),
+            where n is the result size for one region and m is the number of regions.
+        If near2far_region is a single region: a 1D array of shape (n,).
     """
     def calculate_single_region(region):
         far_field = sim.get_farfields(
@@ -495,11 +495,11 @@ def get_I(sim, near2far_region, ff_res, size, f):
         return abs(far_field["Ez"]) ** 2
 
     if isinstance(near2far_region, (list, tuple)):
-        # Если передан список регионов, вычисляем для каждого и собираем
+        # Compute each region and combine the results when given a list.
         I_list = [calculate_single_region(region) for region in near2far_region]
         I_arr = np.column_stack(I_list) if len(I_list) > 1 else I_list[0]
     else:
-        # Если передан одиночный регион
+        # Handle a single region.
         I_arr = calculate_single_region(near2far_region)
 
     return I_arr
@@ -508,14 +508,14 @@ def get_I_loc(sim, near2far_region, shift, ff_res, size, f):
     """
     :param sim: simulation object
     :param near2far_region: single near2far region or list of near2far regions
-    :param ff_res: коэффициент разрешения для дальнего поля
-    :param size: mp.Vector3 с ненулевым значением по интересующей координате
-    :param out_angle_in_deg: угол для вычисления смещения
-    :param f: фокальная плоскость
+    :param ff_res: Far-field resolution factor.
+    :param size: mp.Vector3 with a nonzero component along the axis of interest.
+    :param out_angle_in_deg: Angle used to compute the offset.
+    :param f: Focal plane position.
     :return:
-        Если near2far_region - список: 2D массив shape (n, m),
-            где n - размер результата для одного региона, m - количество регионов
-        Если одиночный регион: 1D массив shape (n,)
+        If near2far_region is a list: a 2D array of shape (n, m),
+            where n is the result size for one region and m is the number of regions.
+        If near2far_region is a single region: a 1D array of shape (n,).
     """
 
     def calculate_single_region(region):
@@ -528,11 +528,11 @@ def get_I_loc(sim, near2far_region, shift, ff_res, size, f):
         return abs(far_field["Ez"]) ** 2
 
     if isinstance(near2far_region, (list, tuple)):
-        # Если передан список регионов, вычисляем для каждого и собираем в columns
+        # Compute each region and combine the results as columns when given a list.
         I_list = [calculate_single_region(region) for region in near2far_region]
         I_arr = np.column_stack(I_list) if len(I_list) > 1 else I_list[0]
     else:
-        # Если передан одиночный регион
+        # Handle a single region.
         I_arr = calculate_single_region(near2far_region)
 
     return I_arr
@@ -563,7 +563,7 @@ def plot_intensity(I_ff, out_angle_in_deg, wavelength_array, abscissa,
     :param save_path: optional path to save figure as PDF (if None, figure is not saved)
     """
 
-    # --- Нормализация ---
+    # --- Normalization ---
     normalized = False
     if I_norm is not None:
         if I_norm.ndim != 1:
@@ -575,7 +575,7 @@ def plot_intensity(I_ff, out_angle_in_deg, wavelength_array, abscissa,
         else:
             print("⚠️ Warning: I_norm has zero maximum, normalization skipped.")
 
-    # --- Настройки оформления ---
+    # --- Styling ---
     plt.rcParams.update({
         "font.family": "sans-serif",
         "font.sans-serif": ["Arial", "Liberation Sans", "DejaVu Sans"],
@@ -590,21 +590,21 @@ def plot_intensity(I_ff, out_angle_in_deg, wavelength_array, abscissa,
     plt.style.use('default')
     plt.figure(dpi=100)
 
-    # --- Построение ---
+    # --- Plotting ---
     if len(wavelength_array) == 1:
         plt.plot(abscissa, I_ff, label=f"Far field ({wavelength_array[0]} μm)")
     else:
         for i in range(I_ff.shape[1]):
             plt.plot(abscissa, I_ff[:, i], label=f"Far field (λ={wavelength_array[i]} μm)")
 
-    # --- Подписи и оформление ---
+    # --- Labels and styling ---
     plt.xlabel("x coordinate [µm]")
     plt.ylabel(r"Normalized energy density, |E$_z$|$^2$")
     plt.title(f"Intensity of CC lens. Out Incident {np.around(out_angle_in_deg, decimals=1)}°")
     plt.legend(loc="upper right")
     plt.tight_layout()
 
-    # --- Сохранение ---
+    # --- Saving ---
     if save_path is not None:
         plt.savefig(save_path, format="pdf", bbox_inches="tight")
         print(f"📄 Figure saved to: {save_path}")
@@ -614,12 +614,12 @@ def plot_intensity(I_ff, out_angle_in_deg, wavelength_array, abscissa,
     # --- FWHM ---
     if isfwhm:
         if normalized:
-            # При нормализации: анализ всех длин волн вместе
+            # Analyze all wavelengths together when normalizing.
             fwhm_values = get_fwhm(abscissa, I_ff)
             for i, fwhm in enumerate(fwhm_values):
                 print(f"λ={wavelength_array[i]}: FWHM = {fwhm:.2f} µm")
         else:
-            # Без нормализации считаем для каждой длины волны отдельно
+            # Analyze each wavelength separately without normalization.
             if len(wavelength_array) == 1:
                 fwhm = get_fwhm(abscissa, I_ff)
                 print(f"FWHM = {fwhm:.2f} µm")
@@ -636,7 +636,7 @@ def get_fwhm(abscissa, intensity):
     :param intensity: 1D or 2D array of intensities
     :return: float (for 1D) or list[float] (for 2D)
     """
-    # --- Универсальная функция для одного профиля ---
+    # --- Shared helper for a single profile ---
     def _fwhm_single(x, I):
         center = np.argmax(I)
         n = len(I)
@@ -658,11 +658,11 @@ def get_fwhm(abscissa, intensity):
         I_norm = I / np.max(I) if np.max(I) != 0 else I
         return find_width(0.5)
 
-    # --- Если одномерный профиль ---
+    # --- One-dimensional profile ---
     if intensity.ndim == 1:
         return _fwhm_single(abscissa, intensity)
 
-    # --- Если многомерный: нормализуем все профили на глобальный максимум ---
+    # --- Multiple profiles: normalize by the global maximum ---
     global_max = np.max(intensity)
     if global_max == 0:
         raise ValueError("Intensity array has zero maximum, cannot compute FWHM.")
@@ -737,7 +737,7 @@ def get_fwhm(abscissa, intensity):
 #     if airy_focus.shape != test_focus.shape:
 #         raise ValueError("Airy and test arrays must have the same shape")
 #
-#     # Вычисляем остальные метрики
+#     # Compute the remaining metrics.
 #     airy_flux_norm = airy_focus / airy_base
 #     test_flux_norm = test_focus / test_base
 #     arr_STREHL = np.max(test_flux_norm, axis=0) / np.max(airy_flux_norm, axis=0)
@@ -956,7 +956,7 @@ def plot_psf(
         Whether to normalize intensity maps to their maximum values (default: True).
     """
 
-    # --- Настройки оформления ---
+    # --- Styling ---
     plt.rcParams.update({
         "font.family": "sans-serif",
         "font.sans-serif": ["Arial", "Liberation Sans", "DejaVu Sans"],
@@ -968,22 +968,22 @@ def plot_psf(
         "axes.linewidth": 1.0,
     })
 
-    # Проверка формы входных данных
+    # Validate the input array shape.
     I = np.asarray(I)
     if I.ndim == 1:
         I = I[:, np.newaxis]
     elif I.ndim != 2:
-        raise ValueError(f"Ожидается 1D или 2D массив, получили ndim={I.ndim}")
+        raise ValueError(f"Expected a 1D or 2D array, got ndim={I.ndim}")
 
-    # Координаты
+    # Coordinates.
     x_plot = abscissa
     x_calculate = get_abscissa(spot_ff, I[:, 0], 0)
 
-    # Сетка
+    # Grid.
     X, Y = np.meshgrid(x_calculate, x_calculate)
     R = np.hypot(X, Y)
 
-    # Подготовка фигуры
+    # Prepare the figure.
     fig, axes = plt.subplots(1, nfrec, figsize=(6 * nfrec, 6), squeeze=False, dpi=300)
     axes = axes.ravel()
     wavelength_array = conf.inc_wavelength_array
@@ -994,17 +994,17 @@ def plot_psf(
         else:
             intensity = I[:, idx]
 
-        # Интерполяция
+        # Interpolation.
         interp_func = interp1d(x_calculate, intensity, bounds_error=False, fill_value=0.0)
         I2d = interp_func(R)
 
-        # Нормировка по флагу
+        # Normalize according to the flag.
         if colorbar_to_1:
             I2d -= I2d.min()
             if I2d.max() > 0:
                 I2d /= I2d.max()
 
-        # Отображение
+        # Display the image.
         im = axes[idx].imshow(
             I2d,
             extent=(x_plot[0], x_plot[-1], x_calculate[0], x_calculate[-1]),
@@ -1026,11 +1026,11 @@ def plot_psf(
         cbar_label = "Normalized intensity" if colorbar_to_1 else "Intensity"
         fig.colorbar(im, ax=axes[idx], label=cbar_label)
 
-    # --- Заголовок и разметка ---
+    # --- Title and layout ---
     plt.tight_layout()
     fig.suptitle(f"Resolution: {len(x_plot)} pixels", fontsize=16, color="blue", y=1.02)
 
-    # --- Сохранение / вывод ---
+    # --- Saving / display ---
     if save_path:
         save_format = save_format.lower()
         if save_format not in ["pdf", "jpeg"]:
@@ -1100,7 +1100,7 @@ Spatial area (for example, an aperture).
     if I_ff.ndim == 1:
         I_ff = I_ff[:, np.newaxis]
 
-    # Получение пространственных координат
+    # Get the spatial coordinates.
     x = get_abscissa(spot_ff, I_ff[:, 0], angle=0)
     dx = np.abs(x[1] - x[0])
     dx_mm = dx * 1e-3
@@ -1113,7 +1113,7 @@ Spatial area (for example, an aperture).
 
     fig, ax = plt.subplots(dpi=300)
 
-    # --- Основной расчёт и построение ---
+    # --- Main calculation and plotting ---
     for i in range(I_ff.shape[1]):
         psf = I_ff[:, i]
         psf /= np.sum(psf)
@@ -1129,7 +1129,7 @@ Spatial area (for example, an aperture).
         label = f"optimized ({wavelength_array[i]:.1f} μm)"
         ax.plot(freq, mtf_normalized, label=label)
 
-    # --- Дифракционный предел ---
+    # --- Diffraction limit ---
     if dif_lim:
         if I_mtf_theory is not None:
             for i in range(I_mtf_theory.shape[1]):
@@ -1178,28 +1178,28 @@ Spatial area (for example, an aperture).
     plt.show()
 
 def setup_visualization():
-    """Инициализация фигуры для визуализации"""
+    """Initialize the visualization figure."""
     global fig, ax
     fig, ax = plt.subplots(figsize=(10, 10))
-    # Определяем палитру цветов
+    # Select the color palette.
     global colors
     colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
           '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
 
 def plot_curve(xx, yy, X_sections, y0, n, is_cut = True):
     """
-    Функция для визуализации кривой и точек пересечения
-    :param xx: x-координаты кривой
-    :param yy: y-координаты кривой
-    :param X_sections: точки пересечения с горизонтальной линией
-    :param y0: y-координата горизонтальной линии
-    :param n: номер кривой (для выбора цвета)
+    Plot the curve and its intersection points.
+    :param xx: Curve x coordinates.
+    :param yy: Curve y coordinates.
+    :param X_sections: Intersections with the horizontal line.
+    :param y0: Horizontal line y coordinate.
+    :param n: Curve index used to select the color.
     """
 
-    # Рисуем кривую
+    # Plot the curve.
     ax.plot(xx, yy, color=colors[n % len(colors)], linewidth=0.5)
 
-    # Выделяем точки пересечения красным
+    # Highlight intersections in red.
     if is_cut:
         ax.scatter(X_sections, np.full_like(X_sections, y0), color='red', s=10, zorder=3)
 
@@ -1209,35 +1209,35 @@ def show_lens(
         orders: int,
         rt: np.ndarray,        # shape = (orders,)
         Q: int = 200,
-        w: float = 0.1,        # линейное расстояние между ячейками
+        w: float = 0.1,        # Linear spacing between cells.
         plot_size: int = 20,
     ):
     """
-    Визуализация равномерного окружного размещения ячеек-линз.
+    Visualize uniformly spaced lens cells around concentric rings.
 
-    Каждый сегмент m отображается профилем y = a * cosh((x - x0)/a),
-    обрезанным по высоте и уложенным по кольцу радиуса r = (rt0 + rt1)/2.
-    rt0 и rt1 — нижняя и верхняя границы радиуса сегмента, без дополнительных смещений.
-    Диаметр всей линзы = 2 * rt[-1].
+    Each segment m uses the profile y = a * cosh((x - x0)/a),
+    cropped in height and placed on a ring of radius r = (rt0 + rt1)/2.
+    rt0 and rt1 are the lower and upper radial bounds without additional offsets.
+    The full lens diameter is 2 * rt[-1].
     """
     fig, ax = plt.subplots(figsize=(plot_size, plot_size))
 
     for m in range(orders):
         a = max(a_params[m], 1e-3)
 
-        # Границы сегмента по радиусу (без +0.01/-0.01)
+        # Segment radial bounds without +0.01/-0.01 offsets.
         rt0 = 0.0 if m == 0 else rt[m - 1] + 0.01
         rt1 = rt[m] - 0.01
 
-        # Если верхняя <= нижней — пропускаем
+        # Skip segments whose upper bound does not exceed the lower bound.
         if rt1 <= rt0:
             continue
 
-        # Центр профиля по x и радиус кольца
+        # Profile center along x and ring radius.
         x0 = 0.0 if m == 0 else (rt[m] + rt0) / 2
         r  = x0
 
-        # Диапазон по x, «надрез» профиля
+        # Range along x and profile truncation.
         L = np.clip(1.5 / a, 2.0, 8.0)
         x_left  = max(rt0, x0 - L * a)
         x_right = min(rt1, x0 + L * a)
@@ -1248,11 +1248,11 @@ def show_lens(
         z = np.clip((x - x0) / a, -20, 20)
         y_profile = a * np.cosh(z)
 
-        # Сдвиг так, чтобы минимум профиля был в нуле
+        # Shift the profile so its minimum is zero.
         ip = np.argmin(y_profile)
         y_shifted = y_profile - y_profile[ip]
 
-        # Обрезка «по высоте» для визуализации
+        # Crop the profile height for visualization.
         ymax = 0.5 * (x.max() - x.min())
         y_top = np.clip(y_shifted, -ymax, ymax)
         y_bot = np.clip(y_shifted - w, -ymax, ymax)
@@ -1260,13 +1260,13 @@ def show_lens(
         xx = np.concatenate([x, x[::-1]])
         yy = np.concatenate([y_top, y_bot[::-1]])
 
-        # Число ячеек на кольце
+        # Number of cells on the ring.
         if r < 1e-6:
             continue
         w_rad = (w / r)
         N = max(3, int(np.floor(2 * np.pi / w_rad)))
 
-        # Рисуем сегменты по окружности
+        # Plot segments around the ring.
         for n in range(N):
             theta = 2 * np.pi * n / N
             xx_local = xx - x0
@@ -1277,7 +1277,7 @@ def show_lens(
             ax.plot(x_rot, y_rot, color='blue', linewidth=0.5)
 
     ax.set_aspect('equal')
-    ax.set_title("Равномерное окружное размещение ячеек")
+    ax.set_title("Uniform circular cell placement")
     plt.show()
 
 def polygon_area(coords):
@@ -1303,14 +1303,14 @@ def generate_lens_gds_2params(
         MIN_POLY_AREA: float = 0.05  # μm²
 ) -> None:
     """
-    Генерирует многослойный GDSII файл.
+    Generate a multilayer GDSII file.
 
-    Этап 1:
-        Проверка площади одного сектора для каждого порядка m.
-        Формируется список допустимых порядков.
+    Stage 1:
+        Check the area of one sector for each order m.
+        Build the list of accepted orders.
 
-    Этап 2:
-        Геометрия создаётся только для допустимых порядков.
+    Stage 2:
+        Generate geometry only for the accepted orders.
     """
 
     a_params = np.asarray(a_params, dtype=float)
@@ -1318,7 +1318,7 @@ def generate_lens_gds_2params(
     rt = np.asarray(rt, dtype=float)
 
     # ============================================================
-    # ЭТАП 1 — ПРЕДВАРИТЕЛЬНАЯ ПРОВЕРКА ПЛОЩАДЕЙ
+    # STAGE 1: PRELIMINARY AREA CHECK
     # ============================================================
 
     valid_orders = np.ones(orders, dtype=bool)
@@ -1379,7 +1379,7 @@ def generate_lens_gds_2params(
                 f"area={area:.4e} μm² < MIN_POLY_AREA={MIN_POLY_AREA:.4e} μm²"
             )
 
-    # ---------- СВОДКА ----------
+    # ---------- SUMMARY ----------
     print("=== Area check completed ===\n")
     total_orders = orders
     rejected_orders = np.count_nonzero(~valid_orders)
@@ -1392,7 +1392,7 @@ def generate_lens_gds_2params(
     print("==========================\n")
 
     # ============================================================
-    # ЭТАП 2 — ГЕНЕРАЦИЯ GDS
+    # STAGE 2: GDS GENERATION
     # ============================================================
 
     lib = gdspy.GdsLibrary(unit=unit, precision=precision)
@@ -1456,6 +1456,378 @@ def generate_lens_gds_2params(
                 ]).T
 
                 cell.add(gdspy.Polygon(coords, layer=layer))
+
+    lib.write_gds(filename)
+    print(f"GDS saved: {filename}")
+
+
+import numpy as np
+import gdspy
+
+
+def generate_lens_gds_by_area(
+        a_params,
+        h_params,  # Retained for compatibility; no longer affects layer assignment.
+        orders: int,
+        rt,
+        w: float = 0.1,
+        Q: int = 80,
+        filename: str = 'lens_layout.gds',
+        cell_name: str = 'LENS_CELL',
+        unit: float = 1e-6,
+        precision: float = 5e-9,
+        MIN_AREA: float = 0.05, # μm²
+        BIG_AREA: float = 0.5, # μm²
+        MID_AREA: float = 0.25 # μm²
+) -> None:
+    """
+    Generate a GDSII file.
+
+    Assign layers by polygon (sector) area:
+    Layer 1: area >= BIG_AREA (default: 0.5 um^2).
+    Layer 2: MID_AREA <= area < BIG_AREA (default MID_AREA: 0.25 um^2).
+    Layer 3: MIN_AREA <= area < MID_AREA.
+    Discard structures whose area is below MIN_AREA.
+    """
+
+    a_params = np.asarray(a_params, dtype=float)
+    h_params = np.asarray(h_params, dtype=float)
+    rt = np.asarray(rt, dtype=float)
+
+    # ============================================================
+    # STAGE 1: PRELIMINARY AREA CHECK AND LAYER ASSIGNMENT
+    # ============================================================
+
+    # Store the layer number; 0 marks a discarded structure.
+    target_layers = np.zeros(orders, dtype=int)
+
+    print("=== Area pre-check and layer assignment per order ===")
+
+    for m in range(orders):
+        a = max(a_params[m], 1e-3)
+
+        rt0 = 0.0 if m == 0 else rt[m - 1] + 0.0025
+        rt1 = rt[m] - 0.0025
+        x0 = 0.0 if m == 0 else 0.5 * (rt[m] + rt0)
+        r = x0
+
+        if r < 1e-6:
+            print(f"[SKIP] order={m}, reason=r too small")
+            continue
+
+        L = np.clip(1.5 / a, 2.0, 10.0)
+        x_left = max(rt0, x0 - L * a)
+        x_right = min(rt1, x0 + L * a)
+
+        if x_right <= x_left:
+            print(f"[SKIP] order={m}, reason=empty x-range")
+            continue
+
+        x = np.linspace(x_left, x_right, Q)
+        z = np.clip((x - x0) / a, -20, 20)
+        y_profile = a * np.cosh(z)
+
+        ip = np.argmin(y_profile)
+        y_shifted = y_profile - y_profile[ip]
+
+        ymax = 0.5 * (x.max() - x.min())
+        y_top = np.clip(y_shifted, -ymax, ymax)
+        y_bot = np.clip(y_shifted - w, -ymax, ymax)
+
+        xx = np.concatenate([x, x[::-1]])
+        yy = np.concatenate([y_top, y_bot[::-1]])
+
+        xx_local = xx - x0
+
+        test_coords = np.vstack([
+            xx_local + r,
+            yy
+        ]).T
+
+        # Compute the sector polygon area.
+        area = polygon_area(test_coords)
+
+        # Assign layers.
+        if area < MIN_AREA:
+            target_layers[m] = 0
+            print(
+                f"[SKIP] order={m}, "
+                f"area={area:.4e} μm² < MIN_POLY_AREA={MIN_AREA:.4e} μm²"
+            )
+        elif area >= BIG_AREA:
+            target_layers[m] = 1
+        elif area >= MID_AREA:
+            target_layers[m] = 2
+        else:
+            target_layers[m] = 3
+
+    # ---------- SUMMARY ----------
+    print("=== Area check completed ===\n")
+
+    rejected_orders = np.count_nonzero(target_layers == 0)
+    layer1_orders = np.count_nonzero(target_layers == 1)
+    layer2_orders = np.count_nonzero(target_layers == 2)
+    layer3_orders = np.count_nonzero(target_layers == 3)
+
+    print("\n=== Area/Layer check summary ===")
+    print(f"Total orders checked : {orders}")
+    print(f"Rejected orders      : {rejected_orders}")
+    print(f"Assigned to Layer 1  : {layer1_orders} (Area >= {BIG_AREA})")
+    print(f"Assigned to Layer 2  : {layer2_orders} ({MID_AREA} <= Area < {BIG_AREA})")
+    print(f"Assigned to Layer 3  : {layer3_orders} ({MIN_AREA} <= Area < 0.25)")
+    print("================================\n")
+
+    # ============================================================
+    # STAGE 2: GDS GENERATION
+    # ============================================================
+
+    lib = gdspy.GdsLibrary(unit=unit, precision=precision)
+    cell = lib.new_cell(cell_name)
+
+    # Iterate over the orders once.
+    for m in range(orders):
+        layer_idx = target_layers[m]
+
+        # Skip layer 0 (area too small or invalid geometry).
+        if layer_idx == 0:
+            continue
+
+        a = max(a_params[m], 1e-3)
+
+        rt0 = 0.0 if m == 0 else rt[m - 1] + 0.0025
+        rt1 = rt[m] - 0.0025
+        x0 = 0.0 if m == 0 else 0.5 * (rt[m] + rt0)
+        r = x0
+
+        L = np.clip(1.5 / a, 2.0, 10.0)
+        x_left = max(rt0, x0 - L * a)
+        x_right = min(rt1, x0 + L * a)
+
+        x = np.linspace(x_left, x_right, Q)
+        z = np.clip((x - x0) / a, -20, 20)
+        y_profile = a * np.cosh(z)
+
+        ip = np.argmin(y_profile)
+        y_shifted = y_profile - y_profile[ip]
+
+        ymax = 0.5 * (x.max() - x.min())
+        y_top = np.clip(y_shifted, -ymax, ymax)
+        y_bot = np.clip(y_shifted - w, -ymax, ymax)
+
+        xx = np.concatenate([x, x[::-1]])
+        yy = np.concatenate([y_top, y_bot[::-1]])
+
+        xx_local = xx - x0
+
+        w_rad_cell = w / r
+        w_rad_gap = w / r
+        T_rad = w_rad_cell + w_rad_gap
+        N = max(1, int(np.floor(2 * np.pi / T_rad)))
+
+        for n in range(N):
+            theta0 = n * T_rad
+            cos0 = np.cos(theta0)
+            sin0 = np.sin(theta0)
+
+            coords = np.vstack([
+                xx_local * cos0 - yy * sin0 + r * cos0,
+                xx_local * sin0 + yy * cos0 + r * sin0
+            ]).T
+
+            # Add the polygon to its assigned layer.
+            cell.add(gdspy.Polygon(coords, layer=layer_idx))
+
+    lib.write_gds(filename)
+    print(f"GDS saved: {filename}")
+
+
+def generate_lens_gds_by_tail_thickness(
+        a_params,
+        h_params,  # Retained for compatibility.
+        orders: int,
+        rt,
+        w: float = 0.1,
+        Q: int = 80,
+        filename: str = 'lens_layout.gds',
+        cell_name: str = 'LENS_CELL',
+        unit: float = 1e-6,
+        precision: float = 5e-9,
+        MIN_POLY_AREA: float = 0.05,  # μm²
+        MID_FEATURE: float = 0.2,
+        BIG_FEATURE: float = 0.5
+) -> None:
+    """
+    Generate a GDSII file.
+
+    1. Filter polygons by area (MIN_POLY_AREA).
+    2. Assign one of three layers based on the minimum horizontal
+       thickness along x between curves at their thinnest ends (tails):
+       Layer 1: thickness > BIG_FEATURE (default: 0.5 um).
+       Layer 2: MID_FEATURE < thickness <= BIG_FEATURE (default MID_FEATURE: 0.2 um).
+       Layer 3: thickness <= MID_FEATURE.
+    """
+
+    a_params = np.asarray(a_params, dtype=float)
+    h_params = np.asarray(h_params, dtype=float)
+    rt = np.asarray(rt, dtype=float)
+
+    target_layers = np.zeros(orders, dtype=int)
+
+    print("=== Checking Area & Tail Thickness (Min dX) ===")
+
+    for m in range(orders):
+        a = max(a_params[m], 1e-3)
+
+        rt0 = 0.0 if m == 0 else rt[m - 1] + 0.0025
+        rt1 = rt[m] - 0.0025
+        x0 = 0.0 if m == 0 else 0.5 * (rt[m] + rt0)
+        r = x0
+
+        if r < 1e-6:
+            print(f"[SKIP] order={m}, reason=r too small")
+            continue
+
+        L = np.clip(1.5 / a, 2.0, 10.0)
+        x_left = max(rt0, x0 - L * a)
+        x_right = min(rt1, x0 + L * a)
+
+        if x_right <= x_left:
+            print(f"[SKIP] order={m}, reason=empty x-range")
+            continue
+
+        x = np.linspace(x_left, x_right, Q)
+        z = np.clip((x - x0) / a, -20, 20)
+        y_profile = a * np.cosh(z)
+
+        ip = np.argmin(y_profile)
+        y_shifted = y_profile - y_profile[ip]
+
+        ymax = 0.5 * (x.max() - x.min())
+        y_top = np.clip(y_shifted, -ymax, ymax)
+        y_bot = np.clip(y_shifted - w, -ymax, ymax)
+
+        xx = np.concatenate([x, x[::-1]])
+        yy = np.concatenate([y_top, y_bot[::-1]])
+        xx_local = xx - x0
+
+        test_coords = np.vstack([xx_local + r, yy]).T
+
+        # Step 1: Filter by area.
+        # Compute the sector polygon area.
+        area = polygon_area(test_coords)
+
+        if area < MIN_POLY_AREA:
+            target_layers[m] = 0
+            print(f"[SKIP] order={m}, area={area:.4e} < MIN_POLY_AREA")
+            continue
+
+        # Step 2: Estimate the minimum horizontal thickness along x.
+        # Use the right half of the curve because the profile is symmetric.
+        right_mask = x >= x0
+        xr = x[right_mask]
+        ytr = y_top[right_mask]
+        ybr = y_bot[right_mask]
+
+        # Find the endpoint of the lower curve before it reaches
+        # the upper clipping boundary ymax.
+        valid_ybr_mask = ybr < ymax - 1e-9
+
+        if np.any(valid_ybr_mask):
+            # Highest point on the lower curve.
+            y_max_eval = ybr[valid_ybr_mask][-1]
+            x_bot_tail = xr[valid_ybr_mask][-1]
+
+            # Use the increasing part of the upper curve before clipping.
+            valid_ytr_mask = ytr < ymax - 1e-9
+            ytr_valid = ytr[valid_ytr_mask]
+            xr_valid = xr[valid_ytr_mask]
+
+            if len(ytr_valid) > 1:
+                # Find the upper curve x coordinate at the same y coordinate.
+                x_top_tail = np.interp(y_max_eval, ytr_valid, xr_valid)
+                # The difference in x coordinates is the minimum tail thickness.
+                min_dx = x_bot_tail - x_top_tail
+            else:
+                min_dx = 0.0
+        else:
+            min_dx = 0.0
+
+        # Step 3: Assign layers.
+        if min_dx > BIG_FEATURE:
+            target_layers[m] = 1
+        elif min_dx > MID_FEATURE:
+            target_layers[m] = 2
+        else:
+            target_layers[m] = 3
+
+    # ---------- SUMMARY ----------
+    rejected_orders = np.count_nonzero(target_layers == 0)
+    layer1_orders = np.count_nonzero(target_layers == 1)
+    layer2_orders = np.count_nonzero(target_layers == 2)
+    layer3_orders = np.count_nonzero(target_layers == 3)
+
+    print("\n=== Tail Thickness / Layer check summary ===")
+    print(f"Total orders checked : {orders}")
+    print(f"Rejected orders      : {rejected_orders} (Area < {MIN_POLY_AREA})")
+    print(f"Assigned to Layer 1  : {layer1_orders} (Tail dX > {BIG_FEATURE} μm)")
+    print(f"Assigned to Layer 2  : {layer2_orders} ({MID_FEATURE} < Tail dX <= {BIG_FEATURE} μm)")
+    print(f"Assigned to Layer 3  : {layer3_orders} (Tail dX <= {MID_FEATURE} μm)")
+    print("============================================\n")
+
+    # ============================================================
+    # STAGE 2: GDS GENERATION
+    # ============================================================
+
+    lib = gdspy.GdsLibrary(unit=unit, precision=precision)
+    cell = lib.new_cell(cell_name)
+
+    for m in range(orders):
+        layer_idx = target_layers[m]
+
+        if layer_idx == 0:
+            continue
+
+        a = max(a_params[m], 1e-3)
+        rt0 = 0.0 if m == 0 else rt[m - 1] + 0.0025
+        rt1 = rt[m] - 0.0025
+        x0 = 0.0 if m == 0 else 0.5 * (rt[m] + rt0)
+        r = x0
+
+        L = np.clip(1.5 / a, 2.0, 10.0)
+        x_left = max(rt0, x0 - L * a)
+        x_right = min(rt1, x0 + L * a)
+
+        x = np.linspace(x_left, x_right, Q)
+        z = np.clip((x - x0) / a, -20, 20)
+        y_profile = a * np.cosh(z)
+
+        ip = np.argmin(y_profile)
+        y_shifted = y_profile - y_profile[ip]
+
+        ymax = 0.5 * (x.max() - x.min())
+        y_top = np.clip(y_shifted, -ymax, ymax)
+        y_bot = np.clip(y_shifted - w, -ymax, ymax)
+
+        xx = np.concatenate([x, x[::-1]])
+        yy = np.concatenate([y_top, y_bot[::-1]])
+        xx_local = xx - x0
+
+        w_rad_cell = w / r
+        w_rad_gap = w / r
+        T_rad = w_rad_cell + w_rad_gap
+        N = max(1, int(np.floor(2 * np.pi / T_rad)))
+
+        for n in range(N):
+            theta0 = n * T_rad
+            cos0 = np.cos(theta0)
+            sin0 = np.sin(theta0)
+
+            coords = np.vstack([
+                xx_local * cos0 - yy * sin0 + r * cos0,
+                xx_local * sin0 + yy * cos0 + r * sin0
+            ]).T
+
+            cell.add(gdspy.Polygon(coords, layer=layer_idx))
 
     lib.write_gds(filename)
     print(f"GDS saved: {filename}")
@@ -1537,17 +1909,17 @@ def generate_lens_stl_cc_linear(
                         poly = orient(poly)
                         if not poly.is_valid:
                             from shapely.validation import explain_validity
-                            print(f"После buffer(0) полигон всё ещё невалиден для сегмента {m}, смещение {y_off}")
-                            print(f"Причина: {explain_validity(poly)}")
+                            print(f"Polygon is still invalid after buffer(0) for segment {m}, offset {y_off}")
+                            print(f"Reason: {explain_validity(poly)}")
                             continue
                     except Exception as e:
-                        print(f"Ошибка при очистке полигона для сегмента {m}, смещение {y_off}: {e}")
+                        print(f"Error cleaning polygon for segment {m}, offset {y_off}: {e}")
                         continue
 
                 if poly.area < 1e-6:
-                    print(f"Малая площадь полигона ({poly.area:.6f}) для сегмента {m}, смещение {y_off}")
+                    print(f"Small polygon area ({poly.area:.6f}) for segment {m}, offset {y_off}")
 
-                # Экструзия на высоту
+                # Extrude to the specified height.
                 try:
                     tri = trimesh.creation.extrude_polygon(poly, h, engine="triangle")
                 except Exception:
@@ -1562,7 +1934,7 @@ def generate_lens_stl_cc_linear(
         final_mesh.export(filename)
         print(f"STL saved: {filename}")
     else:
-        print("Нет геометрии для экспорта")
+        print("No geometry to export")
 
 
 def generate_lens_gds_cc_linear(
@@ -1575,34 +1947,34 @@ def generate_lens_gds_cc_linear(
         filename: str = "lens_layout_linear.gds"
 ) -> None:
     """
-    Генерирует GDS-модель линзы.
-    Ячейки размещаются линейно (±N копий по оси Y) и зеркально по оси X.
-    Все размерности в микронах.
+    Generate a GDS lens model.
+    Place cells linearly (+/-N copies along y) and mirror them along x.
+    All dimensions are in microns.
 
-    Параметры:
+    Parameters:
     ----------
     a_params : array-like
-        Оптимизационные параметры формы (по числу сегментов).
+        Optimized shape parameters, one per segment.
     rt : array-like
-        Радиусы границ сегментов (в микронах).
+        Segment boundary radii in microns.
     orders : int
-        Количество сегментов.
+        Number of segments.
     w : float
-        Толщина одной полосы (ширина мета-ячейки) в микронах.
+        Strip thickness (meta-cell width) in microns.
     Q : int
-        Количество точек для аппроксимации профиля.
+        Number of points used to approximate the profile.
     W : float | None
-        Общая половинная ширина структуры вдоль оси Y.
-        Если не задана, используется максимальный радиус из rt.
+        Overall half-width of the structure along y.
+        Defaults to the maximum radius in rt.
     filename : str
-        Имя файла GDS для сохранения.
+        Output GDS filename.
     """
     a_params = np.asarray(a_params, dtype=float)
     rt = np.asarray(rt, dtype=float)
 
     if W is None:
         W = float(rt[-1])
-    N = int(np.floor(W / (2 * w)))  # число копий по оси Y
+    N = int(np.floor(W / (2 * w)))  # Number of copies along y.
 
     cell = gdspy.Cell("LENS")
 
@@ -1623,7 +1995,7 @@ def generate_lens_gds_cc_linear(
         z = np.clip((x - x0) / a, -20, 20)
         y_profile = a * np.cosh(z)
 
-        # центрирование профиля
+        # Center the profile.
         ip = np.argmin(y_profile)
         y_shifted = y_profile - y_profile[ip]
 
@@ -1634,7 +2006,7 @@ def generate_lens_gds_cc_linear(
         xx = np.concatenate([x, x[::-1]])
         yy = np.concatenate([y_top, y_bot[::-1]])
 
-        # ---- генерация копий вдоль Y и зеркальные по X ----
+        # ---- Generate copies along y and mirror them along x ----
         y_offsets = np.arange(-N, N + 1) * w * 2
         x_signs = [1, -1]
 
@@ -1675,17 +2047,17 @@ def generate_lens_stl_grid(
     The intervals are set by rectangular blocks, the height is taken from h_params.
     """
 
-    # --- входные данные в NumPy ---
+    # --- Convert inputs to NumPy ---
     a_np = np.asarray(a_params, dtype=float)
     h_np = np.asarray(h_params, dtype=float)
 
-    # служебные массивы из внешней функции (предполагаем, что работают с numpy)
+    # Get auxiliary NumPy arrays from the helper function.
     list_drt, list_crt = get_drt_midrt(rt_np, orders)
     y0 = -0.0001 + 2 * stack * w
 
-    rects = []  # список прямоугольников (x_center_local, length_x, height, x0)
+    rects = []  # Rectangles: (x_center_local, length_x, height, x0).
 
-    # --- цикл по порядкам ---
+    # --- Iterate over orders ---
     for m in range(orders):
         a = np.clip(a_np[m], 1e-3, None)
 
@@ -1713,7 +2085,7 @@ def generate_lens_stl_grid(
             x_int = cut_y(xx, yy, y0)
             pure_x_list.append(x_int)
 
-        # нормировка точек
+        # Normalize the points.
         filtered = []
         for arr in pure_x_list:
             if arr is None or arr.size == 0:
@@ -1730,7 +2102,7 @@ def generate_lens_stl_grid(
                 continue
             filtered.append(arr)
 
-        # превращаем интервалы в прямоугольники
+        # Convert intervals to rectangles.
         for arr in filtered:
             if arr.size == 2:
                 intervals = [(float(arr[0]), float(arr[1]))]
@@ -1748,7 +2120,7 @@ def generate_lens_stl_grid(
                 x_center_local = (float(r) + float(l)) / 2.0
                 rects.append((x_center_local, length_x, float(h_np[m]), x0))
 
-    # --- строим геометрию ---
+    # --- Build geometry ---
     meshes = []
 
     W = 20.0
@@ -1765,7 +2137,7 @@ def generate_lens_stl_grid(
         box.apply_translation((x_center_global, 0.0, H + height / 2.0))
         meshes.append(box)
 
-        # зеркальная копия
+        # Mirrored copy.
         mirror_box = box.copy()
         mirror_box.apply_transform(np.diag([-1, 1, 1, 1]))
         meshes.append(mirror_box)
@@ -1773,9 +2145,9 @@ def generate_lens_stl_grid(
     if meshes:
         combined = trimesh.util.concatenate(meshes)
         combined.export(filename)
-        print(f"STL сохранён: {filename}")
+        print(f"STL saved to: {filename}")
     else:
-        print("Нет геометрии для экспорта в STL")
+        print("No geometry to export to STL")
 
 def generate_lens_gds_grid(
     a_params,             # (orders,)
@@ -1789,45 +2161,45 @@ def generate_lens_gds_grid(
     W: float = None,
 ) -> None:
     """
-    Формирует дифракционную решётку в GDS-формате.
-    Интервалы задают прямоугольные блоки без учёта высоты.
-    Подложка не используется. Все размерности — в микронах.
+    Generate a diffraction grating in GDS format.
+    Intervals define rectangular blocks without accounting for height.
+    No substrate is included. All dimensions are in microns.
 
-    Параметры:
+    Parameters:
     ----------
     a_params : array-like
-        Параметры профиля (по числу сегментов).
+        Profile parameters, one per segment.
     orders : int
-        Количество сегментов.
+        Number of segments.
     rt_np : array-like
-        Радиусы границ сегментов.
+        Segment boundary radii.
     stack : int
-        Количество уровней укладки (по оси Y, в единицах шагов w).
+        Number of levels along y, measured in steps of w.
     LIMIT_SHAPE : float
-        Минимальная допустимая длина прямоугольника по X.
+        Minimum allowed rectangle length along x.
     filename : str
-        Имя выходного файла GDS.
+        Output GDS filename.
     Q : int
-        Количество точек для аппроксимации профиля.
+        Number of points used to approximate the profile.
     w : float
-        Толщина одной линии в микронах.
+        Line thickness in microns.
     W : float | None
-        Общая половинная ширина структуры вдоль оси Y. Если None — берётся из rt_np[-1].
+        Overall half-width along y; defaults to rt_np[-1] when None.
     """
-    # --- подготовка данных ---
+    # --- Prepare data ---
     a_np = np.asarray(a_params, dtype=float)
     rt_np = np.asarray(rt_np, dtype=float)
 
     if W is None:
         W = float(rt_np[-1])
 
-    # служебные массивы — их нужно получить из внешних функций
+    # Get auxiliary arrays from the helper functions.
     list_drt, list_crt = get_drt_midrt(rt_np, orders)
 
     y0 = -0.0001 + 2 * stack * w
     rects = []  # (x_center_local, length_x, x0)
 
-    # --- цикл по порядкам ---
+    # --- Iterate over orders ---
     for m in range(orders):
         a = np.clip(a_np[m], 1e-3, None)
         rt0 = 0.0 if m == 0 else rt_np[m - 1] + 0.01
@@ -1850,7 +2222,7 @@ def generate_lens_gds_grid(
             x_int = cut_y(xx, yy, y0)
             pure_x_list.append(x_int)
 
-        # фильтрация и формирование интервалов
+        # Filter values and build intervals.
         filtered = []
         for arr in pure_x_list:
             if arr is None or arr.size == 0:
@@ -1867,7 +2239,7 @@ def generate_lens_gds_grid(
                 continue
             filtered.append(arr)
 
-        # превращаем интервалы в прямоугольники
+        # Convert intervals to rectangles.
         for arr in filtered:
             if arr.size == 2:
                 intervals = [(float(arr[0]), float(arr[1]))]
@@ -1885,7 +2257,7 @@ def generate_lens_gds_grid(
                 x_center_local = (float(r) + float(l)) / 2.0
                 rects.append((x_center_local, length_x, x0))
 
-    # --- построение геометрии GDS ---
+    # --- Build GDS geometry ---
     cell = gdspy.Cell("DIFF_GRATING")
 
     for x_center_local, length_x, x0 in rects:
@@ -1895,7 +2267,7 @@ def generate_lens_gds_grid(
         x_left = x_center_global - length_x / 2.0
         x_right = x_center_global + length_x / 2.0
 
-        # основной прямоугольник
+        # Main rectangle.
         rect_coords = [
             (x_left, y0),
             (x_right, y0),
@@ -1904,7 +2276,7 @@ def generate_lens_gds_grid(
         ]
         cell.add(gdspy.Polygon(rect_coords, layer=1))
 
-        # зеркальная копия по X
+        # Mirrored copy along x.
         rect_coords_mirror = [
             (-x_left, y0),
             (-x_right, y0),
@@ -1914,7 +2286,7 @@ def generate_lens_gds_grid(
         cell.add(gdspy.Polygon(rect_coords_mirror, layer=1))
 
     gdspy.write_gds(filename)
-    print(f"GDS сохранён: {filename}")
+    print(f"GDS saved to: {filename}")
 
 def generate_lens_stl_cells(
         a_params,
@@ -1927,12 +2299,12 @@ def generate_lens_stl_cells(
         filename: str = "diffraction_grating_cells.stl",
         Q: int = 200,
         w: float = 0.1,
-        cell_shape: str = "box",  # "box" или "cylinder"
+        cell_shape: str = "box",  # "box" or "cylinder"
 ) -> trimesh.Trimesh:
     """
-    Формирует решетку ячеек в STL-формате.
-    Можно выбрать форму ячейки: "box" (квадрат) или "cylinder".
-    Размер ячейки берется из length_x.
+    Generate a cell grid in STL format.
+    Choose the cell shape: "box" (square) or "cylinder".
+    The cell size is determined by length_x.
     """
 
     a_np = np.asarray(a_params, dtype=float)
@@ -2004,7 +2376,7 @@ def generate_lens_stl_cells(
                 x_center_global = (float(r) + float(l)) / 2.0 + x0
                 rects.append((x_center_global, length_x, float(h_np[m])))
 
-    # --- строим геометрию ---
+    # --- Build geometry ---
     meshes = []
 
     W = 20.0
@@ -2021,23 +2393,23 @@ def generate_lens_stl_cells(
             y_center = iy * (2*length_x)
 
             if cell_shape == "box":
-                # квадратная ячейка
+                # Square cell.
                 cell = trimesh.creation.box(extents=(length_x, length_x, height))
             elif cell_shape == "cylinder":
-                # цилиндр радиус = length_x/2, высота = height
+                # Cylinder with radius length_x/2 and the specified height.
                 cell = trimesh.creation.cylinder(
                     radius=length_x / 2.0,
                     height=height,
-                    sections=32  # гладкость цилиндра
+                    sections=32  # Cylinder smoothness.
                 )
             else:
-                raise ValueError("cell_shape должен быть 'box' или 'cylinder'")
+                raise ValueError("cell_shape must be 'box' or 'cylinder'")
 
-            # смещаем ячейку
+            # Move the cell.
             cell.apply_translation((x_center, y_center, H + height / 2.0))
             meshes.append(cell)
 
-            # зеркальная копия по X
+            # Mirrored copy along x.
             mirror_cell = cell.copy()
             mirror_cell.apply_transform(np.diag([-1, 1, 1, 1]))
             meshes.append(mirror_cell)
@@ -2045,10 +2417,10 @@ def generate_lens_stl_cells(
     if meshes:
         combined = trimesh.util.concatenate(meshes)
         combined.export(filename)
-        print(f"STL сохранён: {filename} (ячейки: {cell_shape})")
+        print(f"STL saved to: {filename} (cells: {cell_shape})")
         return combined
     else:
-        print("Нет геометрии для экспорта в STL")
+        print("No geometry to export to STL")
         return None
 
 def airy_characteristics():
